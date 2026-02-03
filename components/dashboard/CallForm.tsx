@@ -124,17 +124,21 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
           />
         </div>
 
-        {/* Driver Info */}
-        {isDriverCall && call.driverName && (
+        {/* Driver Info - shows if driver or has RM */}
+        {(isDriverCall || call.managerNumber) && (
           <div className="p-3 bg-yellow-50 rounded-lg space-y-2">
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-600">Driver ID:</span>
-              <span className="font-medium">{call.driverId}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-sm text-gray-600">Ism:</span>
-              <span className="font-medium">{call.driverName}</span>
-            </div>
+            {call.driverId && (
+              <div className="flex justify-between">
+                <span className="text-sm text-gray-600">Driver ID:</span>
+                <span className="font-medium">{call.driverId}</span>
+              </div>
+            )}
+            {call.driverName && (
+              <div className="flex justify-between">
+                <span className="text-sm text-gray-600">Ism:</span>
+                <span className="font-medium">{call.driverName}</span>
+              </div>
+            )}
             {call.driverCar && (
               <div className="flex justify-between">
                 <span className="text-sm text-gray-600">Mashina:</span>
