@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { Save, Loader2 } from 'lucide-react';
-import type { CallLog } from '@/lib/types';
+import type { CallLog, Topic } from '@/lib/types';
 import { formatPhone } from '@/lib/utils';
-import { REGIONS, TOPICS } from '@/lib/types';
+import { REGIONS, DEFAULT_TOPICS } from '@/lib/types';
 
 interface CallFormProps {
   call: CallLog | null;
@@ -14,12 +14,25 @@ interface CallFormProps {
 
 export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
   const [loading, setSaving] = useState(false);
+  const [topics, setTopics] = useState<Topic[]>([]);
   const [formData, setFormData] = useState({
     callerType: '',
     region: '',
     topic: '',
     notes: '',
   });
+
+  // Fetch topics on mount
+  useEffect(() => {
+    fetch('/api/admin/topics')
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setTopics(data.filter((t: Topic) => t.isActive));
+        }
+      })
+      .catch(console.error);
+  }, []);
 
   useEffect(() => {
     if (call) {
@@ -39,9 +52,18 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
     }
   }, [call]);
 
+  // Check if all required fields are filled
+  const isFormValid = formData.callerType && formData.region && formData.topic;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!call) return;
+
+    // Validate required fields
+    if (!formData.callerType || !formData.region || !formData.topic) {
+      alert('Iltimos, barcha majburiy maydonlarni to\'ldiring');
+      return;
+    }
 
     setSaving(true);
     try {
@@ -125,11 +147,14 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
 
         {/* Caller Type */}
         <div>
-          <label className="form-label">Kim qo'ng'iroq qildi</label>
+          <label className="form-label">
+            Kim qo&apos;ng&apos;iroq qildi <span className="text-red-500">*</span>
+          </label>
           <select
             value={formData.callerType}
             onChange={(e) => setFormData({ ...formData, callerType: e.target.value })}
-            className="form-select"
+            className={`form-select ${!formData.callerType ? 'border-red-300' : ''}`}
+            required
           >
             <option value="">Tanlang...</option>
             <option value="driver">Driver</option>
@@ -139,11 +164,14 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
 
         {/* Region */}
         <div>
-          <label className="form-label">Viloyat</label>
+          <label className="form-label">
+            Viloyat <span className="text-red-500">*</span>
+          </label>
           <select
             value={formData.region}
             onChange={(e) => setFormData({ ...formData, region: e.target.value })}
-            className="form-select"
+            className={`form-select ${!formData.region ? 'border-red-300' : ''}`}
+            required
           >
             <option value="">Tanlang...</option>
             {REGIONS.map((region) => (
@@ -156,18 +184,27 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
 
         {/* Topic */}
         <div>
-          <label className="form-label">Suhbat mavzusi</label>
+          <label className="form-label">
+            Suhbat mavzusi <span className="text-red-500">*</span>
+          </label>
           <select
             value={formData.topic}
             onChange={(e) => setFormData({ ...formData, topic: e.target.value })}
-            className="form-select"
+            className={`form-select ${!formData.topic ? 'border-red-300' : ''}`}
+            required
           >
             <option value="">Tanlang...</option>
-            {TOPICS.map((topic) => (
-              <option key={topic} value={topic}>
-                {topic}
-              </option>
-            ))}
+            {topics.length > 0
+              ? topics.map((topic) => (
+                  <option key={topic.id} value={topic.name}>
+                    {topic.name}
+                  </option>
+                ))
+              : DEFAULT_TOPICS.map((topic) => (
+                  <option key={topic} value={topic}>
+                    {topic}
+                  </option>
+                ))}
           </select>
         </div>
 
@@ -196,7 +233,7 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
         {/* Submit */}
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || !isFormValid}
           className="w-full btn btn-primary flex items-center justify-center gap-2"
         >
           {loading ? (
@@ -211,6 +248,11 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
             </>
           )}
         </button>
+        {!isFormValid && (
+          <p className="text-xs text-red-500 text-center">
+            * belgilangan maydonlarni to&apos;ldiring
+          </p>
+        )}
       </form>
     </div>
   );

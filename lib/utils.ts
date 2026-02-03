@@ -5,9 +5,10 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-export function formatPhone(phone: string): string {
+export function formatPhone(phone: string | null | undefined): string {
+  if (!phone) return '';
   // Remove all non-digits
-  const digits = phone.replace(/\D/g, '');
+  const digits = String(phone).replace(/\D/g, '');
 
   // Format as +998 XX XXX XX XX
   if (digits.length === 12 && digits.startsWith('998')) {
@@ -21,9 +22,10 @@ export function formatPhone(phone: string): string {
   return phone;
 }
 
-export function normalizePhone(phone: string): string {
+export function normalizePhone(phone: string | null | undefined): string {
+  if (!phone) return '';
   // Remove all non-digits
-  let digits = phone.replace(/\D/g, '');
+  let digits = String(phone).replace(/\D/g, '');
 
   // Remove leading zeros
   digits = digits.replace(/^0+/, '');
@@ -43,11 +45,12 @@ export function normalizePhone(phone: string): string {
     digits = '998' + digits;
   }
 
-  return '+' + digits;
+  return digits ? '+' + digits : '';
 }
 
 // Search-friendly phone normalization - returns multiple possible formats
-export function getPhoneSearchVariants(phone: string): string[] {
+export function getPhoneSearchVariants(phone: string | null | undefined): string[] {
+  if (!phone) return [];
   const normalized = normalizePhone(phone);
   const digits = normalized.replace(/\D/g, '');
 

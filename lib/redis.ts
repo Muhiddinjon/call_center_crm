@@ -1,5 +1,5 @@
 import { Redis } from '@upstash/redis';
-import type { CallLog, User, Session, CallFilters, ReportStats } from './types';
+import type { CallLog, User, Session, CallFilters, ReportStats, Topic, DEFAULT_TOPICS } from './types';
 import { generateId } from './utils';
 
 // Initialize Redis client
@@ -30,6 +30,10 @@ export const KEYS = {
 
   // Events
   eventsStream: 'events:stream',
+
+  // Topics
+  topic: (id: string) => `topic:${id}`,
+  topicsList: 'topics:list',
 };
 
 // Helper function to remove null/undefined values for Redis storage
@@ -248,7 +252,7 @@ export async function getCallsByPhone(phoneNumber: string): Promise<CallLog[]> {
   return calls.sort((a, b) => b.callStart - a.callStart);
 }
 
-// Search calls by phone across multiple formats
+// Search calls by phone across multiple formats (optimized with parallel queries)
 export async function searchCallsByPhone(phone: string): Promise<{
   calls: CallLog[];
   contactInfo: {
@@ -270,26 +274,46 @@ export async function searchCallsByPhone(phone: string): Promise<{
   const { getPhoneSearchVariants } = await import('./utils');
   const variants = getPhoneSearchVariants(phone);
 
-  // Try each variant to find calls
-  let allCalls: CallLog[] = [];
-  for (const variant of variants) {
-    const calls = await getCallsByPhone(variant);
-    if (calls.length > 0) {
-      allCalls = [...allCalls, ...calls];
+  // Get all call IDs from all phone variants in parallel using pipeline
+  const pipeline = redis.pipeline();
+  variants.forEach(variant => {
+    pipeline.smembers(KEYS.callsByPhone(variant));
+  });
+  const variantResults = await pipeline.exec();
+
+  // Collect all unique call IDs
+  const allIds = new Set<string>();
+  variantResults.forEach(ids => {
+    if (Array.isArray(ids)) {
+      ids.forEach(id => allIds.add(id as string));
     }
+  });
+
+  if (allIds.size === 0) {
+    return {
+      calls: [],
+      contactInfo: {
+        phoneNumber: phone,
+        isDriver: false,
+        totalCalls: 0,
+      },
+    };
   }
 
-  // Remove duplicates by call ID
-  const uniqueCalls = Array.from(
-    new Map(allCalls.map(c => [c.id, c])).values()
-  ).sort((a, b) => b.callStart - a.callStart);
+  // Fetch all call data in parallel using pipeline
+  const callPipeline = redis.pipeline();
+  allIds.forEach(id => callPipeline.hgetall(KEYS.call(id)));
+  const callResults = await callPipeline.exec();
+
+  const calls = (callResults.filter(Boolean) as unknown as CallLog[])
+    .sort((a, b) => b.callStart - a.callStart);
 
   // Extract contact info from most recent driver call
-  const driverCall = uniqueCalls.find(c => c.isDriver);
-  const mostRecentCall = uniqueCalls[0];
+  const driverCall = calls.find(c => c.isDriver);
+  const mostRecentCall = calls[0];
 
   return {
-    calls: uniqueCalls,
+    calls,
     contactInfo: {
       phoneNumber: mostRecentCall?.phoneNumber || phone,
       isDriver: !!driverCall,
@@ -301,7 +325,7 @@ export async function searchCallsByPhone(phone: string): Promise<{
         driverStatus: driverCall.driverStatus,
         managerNumber: driverCall.managerNumber,
       } : undefined,
-      totalCalls: uniqueCalls.length,
+      totalCalls: calls.length,
       lastCall: mostRecentCall?.callStart,
     },
   };
@@ -475,6 +499,73 @@ export async function getRecentEvents(lastId = '0'): Promise<Array<{ id: string;
   }
 }
 
+// ============= TOPIC OPERATIONS =============
+
+export async function createTopic(name: string): Promise<Topic> {
+  const now = Date.now();
+  const existingTopics = await getAllTopics();
+
+  const topic: Topic = {
+    id: generateId(),
+    name,
+    isActive: true,
+    order: existingTopics.length,
+    createdAt: now,
+  };
+
+  const pipeline = redis.pipeline();
+  pipeline.hset(KEYS.topic(topic.id), cleanForRedis(topic as unknown as Record<string, unknown>));
+  pipeline.sadd(KEYS.topicsList, topic.id);
+  await pipeline.exec();
+
+  return topic;
+}
+
+export async function getTopic(id: string): Promise<Topic | null> {
+  const data = await redis.hgetall(KEYS.topic(id));
+  if (!data || Object.keys(data).length === 0) return null;
+  return data as unknown as Topic;
+}
+
+export async function updateTopic(id: string, updates: Partial<Topic>): Promise<Topic | null> {
+  const existing = await getTopic(id);
+  if (!existing) return null;
+
+  const updatedTopic = { ...existing, ...updates };
+  await redis.hset(KEYS.topic(id), cleanForRedis(updatedTopic as unknown as Record<string, unknown>));
+
+  return updatedTopic;
+}
+
+export async function deleteTopic(id: string): Promise<boolean> {
+  const topic = await getTopic(id);
+  if (!topic) return false;
+
+  const pipeline = redis.pipeline();
+  pipeline.del(KEYS.topic(id));
+  pipeline.srem(KEYS.topicsList, id);
+  await pipeline.exec();
+
+  return true;
+}
+
+export async function getAllTopics(): Promise<Topic[]> {
+  const ids = await redis.smembers(KEYS.topicsList);
+  if (!ids || ids.length === 0) return [];
+
+  const pipeline = redis.pipeline();
+  ids.forEach(id => pipeline.hgetall(KEYS.topic(id)));
+  const results = await pipeline.exec();
+
+  const topics = results.filter(Boolean) as unknown as Topic[];
+  return topics.sort((a, b) => a.order - b.order);
+}
+
+export async function getActiveTopics(): Promise<Topic[]> {
+  const topics = await getAllTopics();
+  return topics.filter(t => t.isActive);
+}
+
 // ============= INITIALIZATION =============
 
 export async function initializeDefaultUsers(): Promise<void> {
@@ -498,5 +589,15 @@ export async function initializeDefaultUsers(): Promise<void> {
       fullName: 'Operator',
       isAdmin: false,
     });
+  }
+}
+
+export async function initializeDefaultTopics(): Promise<void> {
+  const existingTopics = await getAllTopics();
+  if (existingTopics.length === 0) {
+    const { DEFAULT_TOPICS } = await import('./types');
+    for (const topicName of DEFAULT_TOPICS) {
+      await createTopic(topicName);
+    }
   }
 }

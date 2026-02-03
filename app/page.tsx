@@ -3,12 +3,11 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { Headphones, LogOut, Wifi, WifiOff, Settings } from 'lucide-react';
-import { ActiveCallsList } from '@/components/dashboard/ActiveCallsList';
 import { CallForm } from '@/components/dashboard/CallForm';
-import { CallHistory } from '@/components/dashboard/CallHistory';
 import { ManualCallForm } from '@/components/dashboard/ManualCallForm';
+import { PhoneHistory } from '@/components/dashboard/PhoneHistory';
 import { IncomingCallModal } from '@/components/dashboard/IncomingCallModal';
-import { useRealtime, usePolling } from '@/hooks/useRealtime';
+import { useRealtime } from '@/hooks/useRealtime';
 import type { CallLog } from '@/lib/types';
 
 interface User {
@@ -59,9 +58,6 @@ export default function DashboardPage() {
     onIncomingCall: handleIncomingCall,
     onCallEnded: handleCallEnded,
   });
-
-  // Fallback polling
-  const { activeCalls } = usePolling(5000);
 
   // Logout
   const handleLogout = async () => {
@@ -136,13 +132,8 @@ export default function DashboardPage() {
       {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left column - Active calls + Manual form */}
-          <div className="space-y-6">
-            <ActiveCallsList
-              calls={activeCalls}
-              selectedCallId={selectedCall?.id}
-              onSelectCall={setSelectedCall}
-            />
+          {/* Left column - Manual call form */}
+          <div>
             <ManualCallForm
               onCallCreated={(call) => {
                 setSelectedCall(call);
@@ -160,11 +151,13 @@ export default function DashboardPage() {
             />
           </div>
 
-          {/* Right column - History */}
+          {/* Right column - Phone number history with comments */}
           <div>
-            <CallHistory
+            <PhoneHistory
+              phoneNumber={selectedCall?.phoneNumber || null}
+              currentCallId={selectedCall?.id}
               onSelectCall={setSelectedCall}
-              refreshTrigger={refreshTrigger}
+              key={`${selectedCall?.phoneNumber}-${refreshTrigger}`}
             />
           </div>
         </div>

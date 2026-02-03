@@ -8,7 +8,8 @@ import {
   LayoutDashboard,
   Users,
   FileText,
-  Download,
+  Tag,
+  Settings,
   LogOut,
   ChevronLeft,
 } from 'lucide-react';
@@ -25,6 +26,8 @@ const navItems = [
   { href: '/admin', icon: LayoutDashboard, label: 'Dashboard' },
   { href: '/admin/reports', icon: FileText, label: 'Hisobotlar' },
   { href: '/admin/users', icon: Users, label: 'Foydalanuvchilar' },
+  { href: '/admin/topics', icon: Tag, label: 'Murojaat turlari' },
+  { href: '/admin/settings', icon: Settings, label: 'Sozlamalar' },
 ];
 
 export default function AdminLayout({

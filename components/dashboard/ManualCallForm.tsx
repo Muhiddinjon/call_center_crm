@@ -42,18 +42,15 @@ export function ManualCallForm({ onCallCreated }: ManualCallFormProps) {
 
     setLookupLoading(true);
     try {
-      // Lookup driver/client info
-      const lookupResponse = await fetch(`/api/calls/lookup/${encodeURIComponent(phoneNumber)}`);
-      if (lookupResponse.ok) {
-        const data = await lookupResponse.json();
+      // Combined lookup - driver/client info + call history in one request
+      const response = await fetch(`/api/calls/lookup/${encodeURIComponent(phoneNumber)}`);
+      if (response.ok) {
+        const data = await response.json();
         setLookupResult(data);
-      }
-
-      // Get call history
-      const historyResponse = await fetch(`/api/calls/history?phone=${encodeURIComponent(phoneNumber)}`);
-      if (historyResponse.ok) {
-        const historyData = await historyResponse.json();
-        setCallHistory(historyData);
+        // Call history is now included in the same response
+        if (data.callHistory) {
+          setCallHistory(data.callHistory);
+        }
       }
     } catch (error) {
       console.error('Lookup error:', error);
@@ -94,9 +91,7 @@ export function ManualCallForm({ onCallCreated }: ManualCallFormProps) {
           makeCall(phoneNumber);
         }
 
-        setPhoneNumber('');
-        setLookupResult(null);
-        setCallHistory(null);
+        // Phone number saqlab qolish, faqat historyni yopish
         setShowHistory(false);
       }
     } catch (error) {

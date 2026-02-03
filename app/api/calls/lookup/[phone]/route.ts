@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCurrentUser } from '@/lib/auth';
 import { lookupByPhone } from '@/lib/driver-lookup';
+import { searchCallsByPhone } from '@/lib/redis';
 
 export async function GET(
   request: NextRequest,
@@ -15,9 +16,17 @@ export async function GET(
     const { phone } = await params;
     const decodedPhone = decodeURIComponent(phone);
 
-    const result = await lookupByPhone(decodedPhone);
+    // Run both lookups in parallel for better performance
+    const [externalResult, localHistory] = await Promise.all([
+      lookupByPhone(decodedPhone),
+      searchCallsByPhone(decodedPhone),
+    ]);
 
-    return NextResponse.json(result);
+    // Combine results - external API takes priority, local DB as fallback
+    return NextResponse.json({
+      ...externalResult,
+      callHistory: localHistory,
+    });
   } catch (error) {
     console.error('Lookup error:', error);
     return NextResponse.json({ error: 'Server xatosi' }, { status: 500 });

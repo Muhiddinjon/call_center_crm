@@ -164,8 +164,8 @@ export const REGIONS = [
   'Surxondaryo',
 ] as const;
 
-// Topics list
-export const TOPICS = [
+// Topics list (default/fallback)
+export const DEFAULT_TOPICS = [
   'Buyurtma',
   'Shikoyat',
   'Maslahat',
@@ -173,3 +173,15 @@ export const TOPICS = [
   'Boshqa',
   'Noaniq',
 ] as const;
+
+// For backward compatibility
+export const TOPICS = DEFAULT_TOPICS;
+
+// Topic type for dynamic topics
+export interface Topic {
+  id: string;
+  name: string;
+  isActive: boolean;
+  order: number;
+  createdAt: number;
+}

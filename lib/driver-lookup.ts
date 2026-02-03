@@ -1,24 +1,42 @@
 import type { DriverInfo, ClientInfo, LookupResult } from './types';
 import { normalizePhone } from './utils';
+import { redis } from './redis';
 
 const DRIVER_API_URL = process.env.DRIVER_API_URL || 'https://new-admin-mocha.vercel.app';
+const CACHE_TTL = 300; // 5 minutes cache
 
 export async function lookupByPhone(phoneNumber: string): Promise<LookupResult> {
   const normalizedPhone = normalizePhone(phoneNumber);
+  const cacheKey = `lookup:${normalizedPhone}`;
 
   try {
+    // Check Redis cache first
+    const cached = await redis.get<LookupResult>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    // Fetch from external API with timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+
     const response = await fetch(`${DRIVER_API_URL}/api/driver/lookup?phone=${encodeURIComponent(normalizedPhone)}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
       },
+      signal: controller.signal,
       // Cache for 5 minutes
       next: { revalidate: 300 },
     });
 
+    clearTimeout(timeoutId);
+
     if (!response.ok) {
       if (response.status === 404) {
-        return {}; // Not found
+        // Cache empty result too to avoid repeated lookups
+        await redis.setex(cacheKey, CACHE_TTL, {});
+        return {};
       }
       throw new Error(`Driver API error: ${response.status}`);
     }
@@ -39,9 +57,17 @@ export async function lookupByPhone(phoneNumber: string): Promise<LookupResult> 
       result.clientInfo = parseClientInfo(client);
     }
 
+    // Cache the result
+    await redis.setex(cacheKey, CACHE_TTL, result);
+
     return result;
   } catch (error) {
-    console.error('Driver lookup error:', error);
+    // On timeout or error, return empty result without blocking
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.warn('Driver lookup timeout for:', normalizedPhone);
+    } else {
+      console.error('Driver lookup error:', error);
+    }
     return {};
   }
 }
