@@ -36,8 +36,10 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
 
   useEffect(() => {
     if (call) {
+      // Redis dan kelganda isDriver string "true" bo'lishi mumkin
+      const isDriver = call.isDriver === true || call.isDriver === 'true';
       setFormData({
-        callerType: call.callerType || (call.isDriver ? 'driver' : ''),
+        callerType: call.callerType || (isDriver ? 'driver' : ''),
         region: call.region || '',
         topic: call.topic || '',
         notes: call.notes || '',
@@ -99,11 +101,14 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
     );
   }
 
+  // Redis dan kelganda isDriver string "true" bo'lishi mumkin
+  const isDriverCall = call.isDriver === true || call.isDriver === 'true';
+
   return (
     <div className="card">
       <div className="card-header flex items-center justify-between">
         <span>Qo'ng'iroq ma'lumotlari</span>
-        {call.isDriver && (
+        {isDriverCall && (
           <span className="badge badge-yellow">Driver</span>
         )}
       </div>
@@ -120,7 +125,7 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
         </div>
 
         {/* Driver Info */}
-        {call.isDriver && call.driverName && (
+        {isDriverCall && call.driverName && (
           <div className="p-3 bg-yellow-50 rounded-lg space-y-2">
             <div className="flex justify-between">
               <span className="text-sm text-gray-600">Driver ID:</span>

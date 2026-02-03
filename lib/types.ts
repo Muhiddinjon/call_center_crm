@@ -13,8 +13,8 @@ export interface CallLog {
   operatorName?: string;
   notes?: string;
 
-  // Driver info
-  isDriver: boolean;
+  // Driver info (Redis dan string sifatida ham kelishi mumkin)
+  isDriver: boolean | string;
   driverId?: string;
   driverName?: string;
   driverCar?: string;
