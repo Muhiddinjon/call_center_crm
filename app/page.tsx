@@ -8,6 +8,7 @@ import { ManualCallForm } from '@/components/dashboard/ManualCallForm';
 import { PhoneHistory } from '@/components/dashboard/PhoneHistory';
 import { IncomingCallModal } from '@/components/dashboard/IncomingCallModal';
 import { MissedCalls } from '@/components/dashboard/MissedCalls';
+import { MyMissedCalls } from '@/components/dashboard/MyMissedCalls';
 import { useRealtime } from '@/hooks/useRealtime';
 import type { CallLog } from '@/lib/types';
 
@@ -55,9 +56,15 @@ export default function DashboardPage() {
     setRefreshTrigger((t) => t + 1);
   }, []);
 
+  const handleMissedCall = useCallback(() => {
+    // Refresh missed calls lists when a new missed call is assigned
+    setRefreshTrigger((t) => t + 1);
+  }, []);
+
   const { isConnected } = useRealtime({
     onIncomingCall: handleIncomingCall,
     onCallEnded: handleCallEnded,
+    onMissedCall: handleMissedCall,
   });
 
   // Logout
@@ -141,6 +148,16 @@ export default function DashboardPage() {
                 setRefreshTrigger((t) => t + 1);
               }}
             />
+            {/* My assigned missed calls - round-robin distributed */}
+            <MyMissedCalls
+              userId={user.id}
+              operatorName={user.fullName || user.username}
+              onCallback={(phoneNumber) => {
+                window.location.href = `sip:${phoneNumber}`;
+              }}
+              key={`my-missed-${refreshTrigger}`}
+            />
+            {/* All unhandled missed calls */}
             <MissedCalls
               operatorName={user.fullName || user.username}
               onCallback={(phoneNumber) => {

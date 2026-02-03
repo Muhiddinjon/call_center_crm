@@ -115,8 +115,8 @@ export interface LookupResult {
 
 // Real-time event types
 export interface RealtimeEvent {
-  type: 'incoming_call' | 'call_ended' | 'call_updated' | 'connected';
-  data?: CallLog | { callId: string } | null;
+  type: 'incoming_call' | 'call_ended' | 'call_updated' | 'connected' | 'missed_call';
+  data?: CallLog | MissedCall | { callId: string } | null;
   timestamp?: number;
 }
 
@@ -208,6 +208,8 @@ export interface OperatorStats {
 }
 
 // Missed call type
+export type MissedCallStatus = 'pending' | 'assigned' | 'called_back' | 'resolved';
+
 export interface MissedCall {
   id: string;
   callId: string;
@@ -217,6 +219,107 @@ export interface MissedCall {
   contactName?: string;
   isDriver: boolean;
   driverName?: string;
+  // Assignment fields
+  assignedTo?: string;        // userId
+  assignedOperator?: string;  // operator name
+  assignedAt?: number;        // assignment timestamp
+  status: MissedCallStatus;
+  // Callback fields
   callbackAt?: number;
   callbackBy?: string;
+}
+
+// Binotel stats sync types
+export interface BinotelStats {
+  incoming: number;
+  outgoing: number;
+  answered: number;
+  missed: number;
+}
+
+export interface SyncedStats {
+  binotel: BinotelStats;
+  local: BinotelStats;
+  diff: BinotelStats;
+  syncedAt: number;
+  binotelAvailable: boolean;
+}
+
+// Shift Management types
+export type ShiftStatus = 'scheduled' | 'active' | 'completed' | 'cancelled';
+
+export interface Shift {
+  id: string;
+  userId: string;
+  operatorName: string;
+  date: string; // "YYYY-MM-DD"
+  startTime: string; // "HH:MM"
+  endTime: string; // "HH:MM"
+  startTimestamp: number;
+  endTimestamp: number;
+  status: ShiftStatus;
+  notes?: string;
+  createdAt: number;
+  updatedAt: number;
+  createdBy: string;
+}
+
+export interface ShiftCreate {
+  userId: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  notes?: string;
+}
+
+export interface ShiftBulkCreate {
+  userId: string;
+  dates: string[];
+  startTime: string;
+  endTime: string;
+  notes?: string;
+}
+
+export interface ShiftFilters {
+  userId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  status?: ShiftStatus;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ShiftReport {
+  userId: string;
+  operatorName: string;
+  periodStart: number;
+  periodEnd: number;
+  totalShifts: number;
+  totalHoursScheduled: number;
+  callsDuringShift: number;
+  answeredCalls: number;
+  missedCalls: number;
+  avgCallDuration: number;
+  answerRate: number;
+  shifts: ShiftDetail[];
+}
+
+export interface ShiftDetail {
+  shiftId: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  hoursScheduled: number;
+  callsDuringShift: number;
+  answeredCalls: number;
+  missedCalls: number;
+}
+
+export interface ShiftCoverage {
+  hour: number;
+  operators: Array<{ userId: string; operatorName: string }>;
+  callCount: number;
+  answeredCount: number;
+  missedCount: number;
+  coverageStatus: 'covered' | 'partial' | 'uncovered';
 }

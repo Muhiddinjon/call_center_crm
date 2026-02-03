@@ -6,7 +6,7 @@ export async function middleware(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
 
   // Public paths that don't require auth
-  const publicPaths = ['/login', '/api/webhook/binotel', '/api/auth/login'];
+  const publicPaths = ['/login', '/api/webhook/binotel', '/api/auth/login', '/api/debug'];
   const isPublicPath = publicPaths.some(path => pathname.startsWith(path));
 
   // API routes that require auth

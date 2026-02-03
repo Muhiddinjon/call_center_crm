@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyWebhookSignature, parseWebhookEvent } from '@/lib/binotel';
-import { createCall, endCall, publishEvent } from '@/lib/redis';
+import { createCall, endCall, publishEvent, getCallByCallId, addMissedCall } from '@/lib/redis';
 import { lookupByPhone } from '@/lib/driver-lookup';
 
 export async function POST(request: NextRequest) {
@@ -66,7 +66,20 @@ export async function POST(request: NextRequest) {
       }
     } else if (['call.end', 'call_end', 'hangup'].includes(callData.event)) {
       // Update call end time
-      await endCall(callData.callId, callData.duration);
+      const updatedCall = await endCall(callData.callId, callData.duration);
+
+      // Check if this is a missed call (incoming call with no duration)
+      if (updatedCall && updatedCall.callType === 'incoming' && (!callData.duration || callData.duration === 0)) {
+        // Add to missed calls with auto-assignment
+        const missedCall = await addMissedCall(updatedCall, true);
+        console.log(`Missed call detected and assigned: ${callData.callId}, assigned to: ${missedCall.assignedOperator || 'no one on shift'}`);
+
+        // Publish missed call event
+        await publishEvent({
+          type: 'missed_call',
+          data: missedCall,
+        });
+      }
 
       // Publish call ended event
       await publishEvent({
@@ -74,7 +87,7 @@ export async function POST(request: NextRequest) {
         data: { callId: callData.callId },
       });
 
-      console.log(`Call ended: ${callData.callId}`);
+      console.log(`Call ended: ${callData.callId}, duration: ${callData.duration || 0}s`);
     }
 
     return NextResponse.json({ status: 'ok', message: 'Webhook received' });

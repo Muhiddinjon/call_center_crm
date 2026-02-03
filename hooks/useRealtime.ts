@@ -7,6 +7,7 @@ interface UseRealtimeOptions {
   onIncomingCall?: (call: CallLog) => void;
   onCallEnded?: (callId: string) => void;
   onCallUpdated?: (call: CallLog) => void;
+  onMissedCall?: (data: unknown) => void;
 }
 
 export function useRealtime(options: UseRealtimeOptions = {}) {
@@ -50,6 +51,11 @@ export function useRealtime(options: UseRealtimeOptions = {}) {
           case 'call_updated':
             if (data.data && options.onCallUpdated) {
               options.onCallUpdated(data.data as CallLog);
+            }
+            break;
+          case 'missed_call':
+            if (data.data && options.onMissedCall) {
+              options.onMissedCall(data.data);
             }
             break;
         }

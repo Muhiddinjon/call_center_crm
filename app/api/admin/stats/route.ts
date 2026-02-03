@@ -1,16 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getOperatorStats, getDailyStats, getCallStats } from '@/lib/redis';
+import { getDashboardStats as getBinotelStats } from '@/lib/binotel';
+import { getTashkentDateString, getTashkentStartOfDay, getTashkentEndOfDay } from '@/lib/utils';
 
 // GET - Get various statistics
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
     const type = searchParams.get('type') || 'daily';
-    const dateFrom = searchParams.get('dateFrom');
-    const dateTo = searchParams.get('dateTo');
+    const dateFrom = searchParams.get('dateFrom'); // Expected format: YYYY-MM-DD
+    const dateTo = searchParams.get('dateTo'); // Expected format: YYYY-MM-DD
     const operatorName = searchParams.get('operator');
 
-    // Build filters
+    // Build filters using Tashkent timezone
     const filters: {
       dateFrom?: number;
       dateTo?: number;
@@ -18,21 +20,18 @@ export async function GET(request: NextRequest) {
     } = {};
 
     if (dateFrom) {
-      filters.dateFrom = new Date(dateFrom).getTime();
+      // Use Tashkent timezone for date parsing
+      filters.dateFrom = getTashkentStartOfDay(dateFrom);
     } else {
-      // Default to today
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      filters.dateFrom = today.getTime();
+      // Default to today in Tashkent
+      filters.dateFrom = getTashkentStartOfDay();
     }
 
     if (dateTo) {
-      filters.dateTo = new Date(dateTo).getTime();
+      filters.dateTo = getTashkentEndOfDay(dateTo);
     } else {
-      // Default to end of today
-      const endOfDay = new Date();
-      endOfDay.setHours(23, 59, 59, 999);
-      filters.dateTo = endOfDay.getTime();
+      // Default to end of today in Tashkent
+      filters.dateTo = getTashkentEndOfDay();
     }
 
     if (operatorName) {
@@ -45,7 +44,30 @@ export async function GET(request: NextRequest) {
     }
 
     if (type === 'daily') {
-      const stats = await getDailyStats(dateFrom ? new Date(dateFrom) : undefined);
+      // Pass date string in YYYY-MM-DD format
+      const stats = await getDailyStats(dateFrom || getTashkentDateString());
+
+      // If local stats seem incomplete (no answered/missed but has calls),
+      // try to get Binotel stats as fallback
+      if (stats.totalCalls > 0 && stats.answeredCalls === 0 && stats.missedCalls === 0) {
+        try {
+          const binotelStats = await getBinotelStats();
+          // Use Binotel data if available
+          return NextResponse.json({
+            ...stats,
+            answeredCalls: binotelStats.todayAnswered,
+            missedCalls: binotelStats.todayMissed,
+            avgDuration: binotelStats.avgDuration,
+            // Mark that this data came from Binotel
+            source: 'binotel',
+            localTotal: stats.totalCalls,
+            binotelTotal: binotelStats.todayIncoming,
+          });
+        } catch (e) {
+          console.warn('Could not fetch Binotel stats as fallback:', e);
+        }
+      }
+
       return NextResponse.json(stats);
     }
 
@@ -57,13 +79,29 @@ export async function GET(request: NextRequest) {
     // Return all stats
     const [operatorStats, dailyStats, generalStats] = await Promise.all([
       getOperatorStats(filters),
-      getDailyStats(dateFrom ? new Date(dateFrom) : undefined),
+      getDailyStats(dateFrom || getTashkentDateString()),
       getCallStats(filters),
     ]);
 
+    // If daily stats seem incomplete, try Binotel fallback
+    let daily = dailyStats;
+    if (dailyStats.totalCalls > 0 && dailyStats.answeredCalls === 0 && dailyStats.missedCalls === 0) {
+      try {
+        const binotelStats = await getBinotelStats();
+        daily = {
+          ...dailyStats,
+          answeredCalls: binotelStats.todayAnswered,
+          missedCalls: binotelStats.todayMissed,
+          avgDuration: binotelStats.avgDuration,
+        };
+      } catch (e) {
+        console.warn('Could not fetch Binotel stats as fallback:', e);
+      }
+    }
+
     return NextResponse.json({
       operators: operatorStats,
-      daily: dailyStats,
+      daily,
       general: generalStats,
     });
   } catch (error) {

@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import type { CallLog } from './types';
-import { normalizePhone } from './utils';
+import { normalizePhone, getTashkentStartOfDay, getTashkentEndOfDay } from './utils';
 
 const API_BASE = 'https://api.binotel.com/api/4.0';
 const API_KEY = process.env.BINOTEL_API_KEY || '';
@@ -12,15 +12,11 @@ interface BinotelResponse {
   [key: string]: any;
 }
 
-async function makeRequest(endpoint: string, params: Record<string, string | number> = {}): Promise<BinotelResponse> {
-  const signature = crypto
-    .createHash('sha256')
-    .update(API_KEY + API_SECRET)
-    .digest('hex');
-
+async function makeRequest(endpoint: string, params: Record<string, string | number | string[]> = {}): Promise<BinotelResponse> {
+  // Binotel API uses key and secret directly, not a signature
   const body = {
     key: API_KEY,
-    signature,
+    secret: API_SECRET,
     ...params,
   };
 
@@ -68,22 +64,24 @@ export async function getOnlineCalls(): Promise<Array<{
 }
 
 export async function getIncomingCallsForToday(): Promise<BinotelResponse> {
-  const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  // Use Tashkent timezone
+  const startOfDay = getTashkentStartOfDay();
+  const now = Date.now();
 
   return makeRequest('stats/incoming-calls-for-period', {
-    startTime: Math.floor(startOfDay.getTime() / 1000),
-    stopTime: Math.floor(now.getTime() / 1000),
+    startTime: Math.floor(startOfDay / 1000),
+    stopTime: Math.floor(now / 1000),
   });
 }
 
 export async function getOutgoingCallsForToday(): Promise<BinotelResponse> {
-  const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  // Use Tashkent timezone
+  const startOfDay = getTashkentStartOfDay();
+  const now = Date.now();
 
   return makeRequest('stats/outgoing-calls-for-period', {
-    startTime: Math.floor(startOfDay.getTime() / 1000),
-    stopTime: Math.floor(now.getTime() / 1000),
+    startTime: Math.floor(startOfDay / 1000),
+    stopTime: Math.floor(now / 1000),
   });
 }
 
@@ -257,6 +255,84 @@ export function parseWebhookEvent(data: Record<string, unknown>): {
     callType,
     duration,
   };
+}
+
+// Get Binotel stats for sync comparison
+export async function getBinotelStatsForSync(): Promise<{
+  incoming: number;
+  outgoing: number;
+  answered: number;
+  missed: number;
+} | null> {
+  try {
+    const stats = await getDashboardStats();
+    return {
+      incoming: stats.todayIncoming,
+      outgoing: stats.todayOutgoing,
+      answered: stats.todayAnswered,
+      missed: stats.todayMissed,
+    };
+  } catch (error) {
+    console.error('Binotel getBinotelStatsForSync error:', error);
+    return null;
+  }
+}
+
+// Get today's calls from Binotel for syncing
+export interface BinotelCallDetail {
+  generalCallID: string;
+  callType: string; // '1' = incoming, '2' = outgoing
+  externalNumber: string;
+  internalNumber: string;
+  startTime: string; // Unix timestamp
+  waitsec: string;
+  billsec: string; // Call duration in seconds
+  disposition: string; // ANSWERED, NO ANSWER, BUSY, etc.
+  isNewCall?: string;
+  companyID?: string;
+}
+
+export async function getTodayCallsFromBinotel(): Promise<BinotelCallDetail[]> {
+  try {
+    // Use Tashkent timezone for start/end of day
+    const startOfDay = getTashkentStartOfDay();
+    const now = Date.now();
+
+    const data = await makeRequest('stats/list-of-calls-for-period', {
+      startTime: Math.floor(startOfDay / 1000),
+      stopTime: Math.floor(now / 1000),
+    });
+
+    if (data.status !== 'success' || !data.callDetails) {
+      console.log('Binotel getTodayCallsFromBinotel: no call details');
+      return [];
+    }
+
+    return Object.values(data.callDetails) as BinotelCallDetail[];
+  } catch (error) {
+    console.error('Binotel getTodayCallsFromBinotel error:', error);
+    return [];
+  }
+}
+
+// Get call details by generalCallID
+export async function getCallDetails(callIds: string[]): Promise<Record<string, BinotelCallDetail>> {
+  try {
+    if (callIds.length === 0) return {};
+
+    const data = await makeRequest('stats/call-details', {
+      generalCallID: callIds,
+    });
+
+    if (data.status !== 'success' || !data.callDetails) {
+      return {};
+    }
+
+    return data.callDetails as Record<string, BinotelCallDetail>;
+  } catch (error) {
+    console.error('Binotel getCallDetails error:', error);
+    return {};
+  }
 }
 
 export type { CallLog };

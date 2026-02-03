@@ -78,6 +78,44 @@ export function getTashkentTime(): Date {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Tashkent' }));
 }
 
+// Get current date string in Tashkent timezone (YYYY-MM-DD)
+export function getTashkentDateString(timestamp?: number): string {
+  const date = timestamp ? new Date(timestamp) : new Date();
+  return date.toLocaleDateString('sv-SE', { timeZone: 'Asia/Tashkent' });
+}
+
+// Get current hour in Tashkent timezone (0-23)
+export function getTashkentHour(timestamp?: number): number {
+  const date = timestamp ? new Date(timestamp) : new Date();
+  return parseInt(date.toLocaleString('en-US', {
+    timeZone: 'Asia/Tashkent',
+    hour: 'numeric',
+    hour12: false
+  }));
+}
+
+// Get start of day timestamp in Tashkent timezone
+export function getTashkentStartOfDay(dateStr?: string): number {
+  const targetDate = dateStr || getTashkentDateString();
+  return new Date(`${targetDate}T00:00:00+05:00`).getTime();
+}
+
+// Get end of day timestamp in Tashkent timezone
+export function getTashkentEndOfDay(dateStr?: string): number {
+  const targetDate = dateStr || getTashkentDateString();
+  return new Date(`${targetDate}T23:59:59+05:00`).getTime();
+}
+
+// Get hour from timestamp in Tashkent timezone
+export function getHourInTashkent(timestamp: number): number {
+  const date = new Date(timestamp);
+  return parseInt(date.toLocaleString('en-US', {
+    timeZone: 'Asia/Tashkent',
+    hour: 'numeric',
+    hour12: false
+  }));
+}
+
 // Convert timestamp to Tashkent timezone string
 export function toTashkentISO(timestamp: number): string {
   const date = new Date(timestamp);

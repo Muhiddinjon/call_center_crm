@@ -1,6 +1,7 @@
 import { Redis } from '@upstash/redis';
-import type { CallLog, User, Session, CallFilters, ReportStats, Topic, Contact, OperatorStats, MissedCall } from './types';
-import { generateId } from './utils';
+import type { CallLog, User, Session, CallFilters, ReportStats, Topic, Contact, OperatorStats, MissedCall, MissedCallStatus, Shift, ShiftFilters, ShiftReport, ShiftDetail, ShiftCoverage } from './types';
+import { generateId, getTashkentDateString, getTashkentHour, getTashkentStartOfDay, getTashkentEndOfDay, getHourInTashkent, normalizePhone, getPhoneSearchVariants } from './utils';
+import crypto from 'crypto';
 
 // Initialize Redis client
 export const redis = new Redis({
@@ -41,21 +42,63 @@ export const KEYS = {
 
   // Missed calls
   missedCalls: 'calls:missed',
+  missedRoundRobinIndex: 'missed:round_robin_index',
+  missedAssigned: (userId: string) => `missed:assigned:${userId}`,
+
+  // Shifts
+  shift: (id: string) => `shift:${id}`,
+  shiftsByDate: (date: string) => `shifts:date:${date}`,
+  shiftsByUser: (userId: string) => `shifts:user:${userId}`,
+  shiftsList: 'shifts:list',
+  shiftCoverage: (date: string, hour: number) => `shifts:coverage:${date}:${hour}`,
 };
 
 // Helper function to remove null/undefined values for Redis storage
-function cleanForRedis(obj: Record<string, unknown>): Record<string, string | number | boolean> {
+function cleanForRedis<T extends Record<string, unknown>>(obj: T): Record<string, string | number | boolean> {
   const cleaned: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(obj)) {
     if (value !== null && value !== undefined) {
       if (typeof value === 'object') {
         cleaned[key] = JSON.stringify(value);
-      } else {
-        cleaned[key] = value as string | number | boolean;
+      } else if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        cleaned[key] = value;
       }
     }
   }
   return cleaned;
+}
+
+// Type-safe Redis hash parser
+function parseRedisHash<T>(data: Record<string, unknown> | null): T | null {
+  if (!data || Object.keys(data).length === 0) return null;
+
+  // Parse JSON strings back to objects where needed
+  const parsed: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (typeof value === 'string') {
+      // Try to parse JSON strings
+      if (value.startsWith('{') || value.startsWith('[')) {
+        try {
+          parsed[key] = JSON.parse(value);
+        } catch {
+          parsed[key] = value;
+        }
+      } else if (value === 'true') {
+        parsed[key] = true;
+      } else if (value === 'false') {
+        parsed[key] = false;
+      } else if (!isNaN(Number(value)) && value !== '') {
+        // Check if it's a number
+        parsed[key] = Number(value);
+      } else {
+        parsed[key] = value;
+      }
+    } else {
+      parsed[key] = value;
+    }
+  }
+
+  return parsed as T;
 }
 
 // ============= CALL OPERATIONS =============
@@ -115,8 +158,7 @@ export async function createCall(callData: Partial<CallLog>): Promise<CallLog> {
 
 export async function getCall(id: string): Promise<CallLog | null> {
   const data = await redis.hgetall(KEYS.call(id));
-  if (!data || Object.keys(data).length === 0) return null;
-  return data as unknown as CallLog;
+  return parseRedisHash<CallLog>(data);
 }
 
 export async function getCallByCallId(callId: string): Promise<CallLog | null> {
@@ -279,8 +321,6 @@ export async function searchCallsByPhone(phone: string): Promise<{
     lastCall?: number;
   };
 }> {
-  // Import utils for phone search variants
-  const { getPhoneSearchVariants } = await import('./utils');
   const variants = getPhoneSearchVariants(phone);
 
   // Get all call IDs from all phone variants in parallel using pipeline
@@ -399,8 +439,7 @@ export async function createUser(userData: {
 
 export async function getUser(id: string): Promise<User | null> {
   const data = await redis.hgetall(KEYS.user(id));
-  if (!data || Object.keys(data).length === 0) return null;
-  return data as unknown as User;
+  return parseRedisHash<User>(data);
 }
 
 export async function getUserByUsername(username: string): Promise<User | null> {
@@ -466,8 +505,7 @@ export async function createSession(user: User, token: string): Promise<Session>
 
 export async function getSession(token: string): Promise<Session | null> {
   const data = await redis.hgetall(KEYS.session(token));
-  if (!data || Object.keys(data).length === 0) return null;
-  return data as unknown as Session;
+  return parseRedisHash<Session>(data);
 }
 
 export async function deleteSession(token: string): Promise<void> {
@@ -532,8 +570,7 @@ export async function createTopic(name: string): Promise<Topic> {
 
 export async function getTopic(id: string): Promise<Topic | null> {
   const data = await redis.hgetall(KEYS.topic(id));
-  if (!data || Object.keys(data).length === 0) return null;
-  return data as unknown as Topic;
+  return parseRedisHash<Topic>(data);
 }
 
 export async function updateTopic(id: string, updates: Partial<Topic>): Promise<Topic | null> {
@@ -580,7 +617,6 @@ export async function getActiveTopics(): Promise<Topic[]> {
 export async function initializeDefaultUsers(): Promise<void> {
   const adminExists = await getUserByUsername('admin');
   if (!adminExists) {
-    const crypto = await import('crypto');
     await createUser({
       username: 'admin',
       passwordHash: crypto.createHash('sha256').update('admin123').digest('hex'),
@@ -591,7 +627,6 @@ export async function initializeDefaultUsers(): Promise<void> {
 
   const operatorExists = await getUserByUsername('operator');
   if (!operatorExists) {
-    const crypto = await import('crypto');
     await createUser({
       username: 'operator',
       passwordHash: crypto.createHash('sha256').update('operator123').digest('hex'),
@@ -604,8 +639,15 @@ export async function initializeDefaultUsers(): Promise<void> {
 export async function initializeDefaultTopics(): Promise<void> {
   const existingTopics = await getAllTopics();
   if (existingTopics.length === 0) {
-    const { DEFAULT_TOPICS } = await import('./types');
-    for (const topicName of DEFAULT_TOPICS) {
+    // Default topics for call center
+    const defaultTopics = [
+      'Buyurtma',
+      'Shikoyat',
+      'Ma\'lumot',
+      'Texnik yordam',
+      'Boshqa',
+    ];
+    for (const topicName of defaultTopics) {
       await createTopic(topicName);
     }
   }
@@ -614,7 +656,6 @@ export async function initializeDefaultTopics(): Promise<void> {
 // ============= CONTACT OPERATIONS =============
 
 export async function saveContact(phoneNumber: string, name: string, notes?: string, createdBy?: string): Promise<Contact> {
-  const { normalizePhone } = await import('./utils');
   const normalizedPhone = normalizePhone(phoneNumber);
   const now = Date.now();
 
@@ -638,7 +679,6 @@ export async function saveContact(phoneNumber: string, name: string, notes?: str
 }
 
 export async function getContact(phoneNumber: string): Promise<Contact | null> {
-  const { normalizePhone, getPhoneSearchVariants } = await import('./utils');
   const normalizedPhone = normalizePhone(phoneNumber);
 
   // Try exact match first
@@ -660,7 +700,6 @@ export async function getContact(phoneNumber: string): Promise<Contact | null> {
 }
 
 export async function deleteContact(phoneNumber: string): Promise<boolean> {
-  const { normalizePhone } = await import('./utils');
   const normalizedPhone = normalizePhone(phoneNumber);
 
   const pipeline = redis.pipeline();
@@ -694,7 +733,7 @@ export async function searchContacts(query: string): Promise<Contact[]> {
 
 // ============= MISSED CALLS OPERATIONS =============
 
-export async function addMissedCall(call: CallLog): Promise<void> {
+export async function addMissedCall(call: CallLog, autoAssign = true): Promise<MissedCall> {
   const missedCall: MissedCall = {
     id: call.id,
     callId: call.callId,
@@ -703,6 +742,7 @@ export async function addMissedCall(call: CallLog): Promise<void> {
     internalNumber: call.internalNumber,
     isDriver: call.isDriver === true || call.isDriver === 'true',
     driverName: call.driverName,
+    status: 'pending',
   };
 
   // Get contact name if exists
@@ -711,10 +751,113 @@ export async function addMissedCall(call: CallLog): Promise<void> {
     missedCall.contactName = contact.name;
   }
 
+  // Auto-assign to operator on shift (round-robin)
+  if (autoAssign) {
+    const assignment = await assignMissedCallToOperator(missedCall);
+    if (assignment) {
+      missedCall.assignedTo = assignment.userId;
+      missedCall.assignedOperator = assignment.operatorName;
+      missedCall.assignedAt = Date.now();
+      missedCall.status = 'assigned';
+    }
+  }
+
   await redis.zadd(KEYS.missedCalls, {
     score: call.callStart,
     member: JSON.stringify(missedCall)
   });
+
+  return missedCall;
+}
+
+// Round-robin assignment for missed calls
+export async function assignMissedCallToOperator(missedCall: MissedCall): Promise<{
+  userId: string;
+  operatorName: string;
+} | null> {
+  const now = Date.now();
+  // Get current date and hour in Tashkent timezone
+  const today = getTashkentDateString();
+  const currentHour = getTashkentHour();
+
+  // 1. Get operators on duty right now
+  const onDutyUserIds = await redis.smembers(KEYS.shiftCoverage(today, currentHour)) as string[];
+  if (!onDutyUserIds || onDutyUserIds.length === 0) {
+    // No one on shift, don't assign
+    return null;
+  }
+
+  // 2. Get current round-robin index
+  let index = parseInt(await redis.get(KEYS.missedRoundRobinIndex) as string || '0');
+
+  // 3. Select next operator (round-robin)
+  index = (index + 1) % onDutyUserIds.length;
+  const assignedUserId = onDutyUserIds[index];
+
+  // 4. Save new index
+  await redis.set(KEYS.missedRoundRobinIndex, index.toString());
+
+  // 5. Get operator name
+  const user = await getUser(assignedUserId);
+  const operatorName = user?.fullName || user?.username || 'Noma\'lum';
+
+  // 6. Add to operator's assigned missed calls
+  await redis.zadd(KEYS.missedAssigned(assignedUserId), {
+    score: now,
+    member: missedCall.id
+  });
+
+  return { userId: assignedUserId, operatorName };
+}
+
+// Get missed calls assigned to a specific operator
+export async function getMissedCallsForOperator(userId: string): Promise<MissedCall[]> {
+  // Get assigned call IDs
+  const assignedIds = await redis.zrange(KEYS.missedAssigned(userId), 0, -1, { rev: true }) as string[];
+  if (!assignedIds || assignedIds.length === 0) return [];
+
+  // Get all missed calls and filter by assigned IDs
+  const allMissedCalls = await getMissedCalls(1000);
+  return allMissedCalls.filter(mc =>
+    assignedIds.includes(mc.id) && mc.status !== 'resolved'
+  );
+}
+
+// Update missed call status
+export async function updateMissedCallStatus(
+  callId: string,
+  status: MissedCallStatus,
+  operatorName?: string
+): Promise<MissedCall | null> {
+  const missedCalls = await getMissedCalls(1000);
+  const missedCall = missedCalls.find(c => c.callId === callId || c.id === callId);
+
+  if (!missedCall) return null;
+
+  // Remove old entry
+  await redis.zrem(KEYS.missedCalls, JSON.stringify(missedCall));
+
+  // Update fields
+  missedCall.status = status;
+  if (status === 'called_back' || status === 'resolved') {
+    missedCall.callbackAt = Date.now();
+    if (operatorName) {
+      missedCall.callbackBy = operatorName;
+    }
+  }
+
+  // Add updated entry
+  await redis.zadd(KEYS.missedCalls, {
+    score: missedCall.callStart,
+    member: JSON.stringify(missedCall)
+  });
+
+  // If resolved, remove from operator's assigned list
+  if (status === 'resolved' && missedCall.assignedTo) {
+    await redis.zrem(KEYS.missedAssigned(missedCall.assignedTo), missedCall.id);
+  }
+
+  return missedCall;
 }
 
 export async function getMissedCalls(limit = 50): Promise<MissedCall[]> {
@@ -729,23 +872,7 @@ export async function getMissedCalls(limit = 50): Promise<MissedCall[]> {
 }
 
 export async function markMissedCallAsCallback(callId: string, operatorName: string): Promise<void> {
-  // Get all missed calls
-  const missedCalls = await getMissedCalls(1000);
-  const missedCall = missedCalls.find(c => c.callId === callId || c.id === callId);
-
-  if (missedCall) {
-    // Remove old entry
-    await redis.zrem(KEYS.missedCalls, JSON.stringify(missedCall));
-
-    // Add updated entry with callback info
-    missedCall.callbackAt = Date.now();
-    missedCall.callbackBy = operatorName;
-
-    await redis.zadd(KEYS.missedCalls, {
-      score: missedCall.callStart,
-      member: JSON.stringify(missedCall)
-    });
-  }
+  await updateMissedCallStatus(callId, 'called_back', operatorName);
 }
 
 export async function removeMissedCall(callId: string): Promise<void> {
@@ -759,7 +886,7 @@ export async function removeMissedCall(callId: string): Promise<void> {
 
 export async function getUnhandledMissedCalls(): Promise<MissedCall[]> {
   const missedCalls = await getMissedCalls(1000);
-  return missedCalls.filter(c => !c.callbackAt);
+  return missedCalls.filter(c => c.status === 'pending' || c.status === 'assigned');
 }
 
 // ============= OPERATOR STATISTICS =============
@@ -820,16 +947,17 @@ export async function getOperatorStats(filters: CallFilters): Promise<OperatorSt
   return result.sort((a, b) => b.totalCalls - a.totalCalls);
 }
 
-export async function getDailyStats(date?: Date): Promise<{
+export async function getDailyStats(dateStr?: string): Promise<{
   totalCalls: number;
   answeredCalls: number;
   missedCalls: number;
   avgDuration: number;
   byHour: Record<number, number>;
 }> {
-  const targetDate = date || new Date();
-  const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate()).getTime();
-  const endOfDay = startOfDay + 24 * 60 * 60 * 1000;
+  // Use Tashkent timezone for date calculations
+  const targetDate = dateStr || getTashkentDateString();
+  const startOfDay = getTashkentStartOfDay(targetDate);
+  const endOfDay = getTashkentEndOfDay(targetDate);
 
   const calls = await queryCalls({
     dateFrom: startOfDay,
@@ -848,7 +976,8 @@ export async function getDailyStats(date?: Date): Promise<{
   }
 
   calls.forEach(call => {
-    const hour = new Date(call.callStart).getHours();
+    // Get hour in Tashkent timezone
+    const hour = getHourInTashkent(call.callStart);
     byHour[hour]++;
 
     if (call.callEnd && call.callDuration && call.callDuration > 0) {
@@ -865,5 +994,372 @@ export async function getDailyStats(date?: Date): Promise<{
     missedCalls,
     avgDuration: answeredCalls > 0 ? Math.round(totalDuration / answeredCalls) : 0,
     byHour,
+  };
+}
+
+// ============= SHIFT OPERATIONS =============
+
+function calculateShiftTimestamps(date: string, startTime: string, endTime: string): {
+  startTimestamp: number;
+  endTimestamp: number;
+} {
+  // Parse date and times in Tashkent timezone (UTC+5)
+  const [startH, startM] = startTime.split(':').map(Number);
+  const [endH, endM] = endTime.split(':').map(Number);
+
+  const startDate = new Date(`${date}T${startTime}:00+05:00`);
+  let endDate = new Date(`${date}T${endTime}:00+05:00`);
+
+  // Handle overnight shifts (e.g., 22:00 - 06:00)
+  if (endH < startH || (endH === startH && endM < startM)) {
+    endDate.setDate(endDate.getDate() + 1);
+  }
+
+  return {
+    startTimestamp: startDate.getTime(),
+    endTimestamp: endDate.getTime(),
+  };
+}
+
+export function calculateShiftHours(startTime: string, endTime: string): number {
+  const [startH, startM] = startTime.split(':').map(Number);
+  const [endH, endM] = endTime.split(':').map(Number);
+
+  let hours = endH - startH + (endM - startM) / 60;
+  if (hours < 0) hours += 24; // Overnight shift
+  return hours;
+}
+
+export async function createShift(data: {
+  userId: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  notes?: string;
+  createdBy: string;
+}): Promise<Shift> {
+  const now = Date.now();
+  const { startTimestamp, endTimestamp } = calculateShiftTimestamps(data.date, data.startTime, data.endTime);
+
+  // Get operator name
+  const user = await getUser(data.userId);
+  const operatorName = user?.fullName || user?.username || 'Noma\'lum';
+
+  const shift: Shift = {
+    id: generateId(),
+    userId: data.userId,
+    operatorName,
+    date: data.date,
+    startTime: data.startTime,
+    endTime: data.endTime,
+    startTimestamp,
+    endTimestamp,
+    status: 'scheduled',
+    notes: data.notes,
+    createdAt: now,
+    updatedAt: now,
+    createdBy: data.createdBy,
+  };
+
+  const pipeline = redis.pipeline();
+
+  // Store shift data
+  pipeline.hset(KEYS.shift(shift.id), cleanForRedis(shift as unknown as Record<string, unknown>));
+
+  // Add to shifts list
+  pipeline.sadd(KEYS.shiftsList, shift.id);
+
+  // Index by date (sorted by start timestamp)
+  pipeline.zadd(KEYS.shiftsByDate(data.date), { score: startTimestamp, member: shift.id });
+
+  // Index by user (sorted by start timestamp)
+  pipeline.zadd(KEYS.shiftsByUser(data.userId), { score: startTimestamp, member: shift.id });
+
+  // Update coverage index for each hour
+  const [startH] = data.startTime.split(':').map(Number);
+  const [endH] = data.endTime.split(':').map(Number);
+  const hours = endH > startH
+    ? Array.from({ length: endH - startH }, (_, i) => startH + i)
+    : [...Array.from({ length: 24 - startH }, (_, i) => startH + i), ...Array.from({ length: endH }, (_, i) => i)];
+
+  hours.forEach(hour => {
+    pipeline.sadd(KEYS.shiftCoverage(data.date, hour), data.userId);
+  });
+
+  await pipeline.exec();
+
+  return shift;
+}
+
+export async function getShift(id: string): Promise<Shift | null> {
+  const data = await redis.hgetall(KEYS.shift(id));
+  return parseRedisHash<Shift>(data);
+}
+
+export async function updateShift(id: string, updates: Partial<Shift>): Promise<Shift | null> {
+  const existing = await getShift(id);
+  if (!existing) return null;
+
+  const now = Date.now();
+
+  // Recalculate timestamps if time changed
+  let timestamps = {};
+  if (updates.startTime || updates.endTime || updates.date) {
+    const date = updates.date || existing.date;
+    const startTime = updates.startTime || existing.startTime;
+    const endTime = updates.endTime || existing.endTime;
+    timestamps = calculateShiftTimestamps(date, startTime, endTime);
+  }
+
+  const updatedShift: Shift = {
+    ...existing,
+    ...updates,
+    ...timestamps,
+    updatedAt: now,
+  };
+
+  const pipeline = redis.pipeline();
+
+  // Update shift data
+  pipeline.hset(KEYS.shift(id), cleanForRedis(updatedShift as unknown as Record<string, unknown>));
+
+  // If date changed, update date indexes
+  if (updates.date && updates.date !== existing.date) {
+    pipeline.zrem(KEYS.shiftsByDate(existing.date), id);
+    pipeline.zadd(KEYS.shiftsByDate(updates.date), { score: updatedShift.startTimestamp, member: id });
+
+    // Update coverage indexes
+    const [oldStartH] = existing.startTime.split(':').map(Number);
+    const [oldEndH] = existing.endTime.split(':').map(Number);
+    const oldHours = oldEndH > oldStartH
+      ? Array.from({ length: oldEndH - oldStartH }, (_, i) => oldStartH + i)
+      : [...Array.from({ length: 24 - oldStartH }, (_, i) => oldStartH + i), ...Array.from({ length: oldEndH }, (_, i) => i)];
+
+    oldHours.forEach(hour => {
+      pipeline.srem(KEYS.shiftCoverage(existing.date, hour), existing.userId);
+    });
+
+    const [newStartH] = updatedShift.startTime.split(':').map(Number);
+    const [newEndH] = updatedShift.endTime.split(':').map(Number);
+    const newHours = newEndH > newStartH
+      ? Array.from({ length: newEndH - newStartH }, (_, i) => newStartH + i)
+      : [...Array.from({ length: 24 - newStartH }, (_, i) => newStartH + i), ...Array.from({ length: newEndH }, (_, i) => i)];
+
+    newHours.forEach(hour => {
+      pipeline.sadd(KEYS.shiftCoverage(updatedShift.date, hour), updatedShift.userId);
+    });
+  }
+
+  await pipeline.exec();
+
+  return updatedShift;
+}
+
+export async function deleteShift(id: string): Promise<boolean> {
+  const shift = await getShift(id);
+  if (!shift) return false;
+
+  const pipeline = redis.pipeline();
+
+  // Delete shift data
+  pipeline.del(KEYS.shift(id));
+
+  // Remove from list
+  pipeline.srem(KEYS.shiftsList, id);
+
+  // Remove from date index
+  pipeline.zrem(KEYS.shiftsByDate(shift.date), id);
+
+  // Remove from user index
+  pipeline.zrem(KEYS.shiftsByUser(shift.userId), id);
+
+  // Remove from coverage indexes
+  const [startH] = shift.startTime.split(':').map(Number);
+  const [endH] = shift.endTime.split(':').map(Number);
+  const hours = endH > startH
+    ? Array.from({ length: endH - startH }, (_, i) => startH + i)
+    : [...Array.from({ length: 24 - startH }, (_, i) => startH + i), ...Array.from({ length: endH }, (_, i) => i)];
+
+  hours.forEach(hour => {
+    pipeline.srem(KEYS.shiftCoverage(shift.date, hour), shift.userId);
+  });
+
+  await pipeline.exec();
+
+  return true;
+}
+
+export async function getShiftsByDate(date: string): Promise<Shift[]> {
+  const ids = await redis.zrange(KEYS.shiftsByDate(date), 0, -1) as string[];
+  if (!ids || ids.length === 0) return [];
+
+  const pipeline = redis.pipeline();
+  ids.forEach(id => pipeline.hgetall(KEYS.shift(id)));
+  const results = await pipeline.exec();
+
+  return results.filter(Boolean) as unknown as Shift[];
+}
+
+export async function getShiftsByUser(userId: string, dateFrom?: string, dateTo?: string): Promise<Shift[]> {
+  let ids: string[];
+
+  if (dateFrom || dateTo) {
+    const minScore = dateFrom ? new Date(`${dateFrom}T00:00:00+05:00`).getTime() : 0;
+    const maxScore = dateTo ? new Date(`${dateTo}T23:59:59+05:00`).getTime() : Date.now() + 365 * 24 * 60 * 60 * 1000;
+
+    ids = await redis.zrange(KEYS.shiftsByUser(userId), minScore, maxScore, { byScore: true }) as string[];
+  } else {
+    ids = await redis.zrange(KEYS.shiftsByUser(userId), 0, -1) as string[];
+  }
+
+  if (!ids || ids.length === 0) return [];
+
+  const pipeline = redis.pipeline();
+  ids.forEach(id => pipeline.hgetall(KEYS.shift(id)));
+  const results = await pipeline.exec();
+
+  return results.filter(Boolean) as unknown as Shift[];
+}
+
+export async function queryShifts(filters: ShiftFilters): Promise<Shift[]> {
+  const { userId, dateFrom, dateTo, status, limit = 100, offset = 0 } = filters;
+
+  let shifts: Shift[] = [];
+
+  if (userId) {
+    shifts = await getShiftsByUser(userId, dateFrom, dateTo);
+  } else if (dateFrom || dateTo) {
+    // Get all shifts in date range
+    const allIds = await redis.smembers(KEYS.shiftsList);
+    if (allIds && allIds.length > 0) {
+      const pipeline = redis.pipeline();
+      allIds.forEach(id => pipeline.hgetall(KEYS.shift(id)));
+      const results = await pipeline.exec();
+      shifts = results.filter(Boolean) as unknown as Shift[];
+
+      // Filter by date
+      const minDate = dateFrom || '1970-01-01';
+      const maxDate = dateTo || '2100-12-31';
+      shifts = shifts.filter(s => s.date >= minDate && s.date <= maxDate);
+    }
+  } else {
+    // Get all shifts
+    const allIds = await redis.smembers(KEYS.shiftsList);
+    if (allIds && allIds.length > 0) {
+      const pipeline = redis.pipeline();
+      allIds.forEach(id => pipeline.hgetall(KEYS.shift(id)));
+      const results = await pipeline.exec();
+      shifts = results.filter(Boolean) as unknown as Shift[];
+    }
+  }
+
+  // Apply status filter
+  if (status) {
+    shifts = shifts.filter(s => s.status === status);
+  }
+
+  // Sort by date descending
+  shifts.sort((a, b) => b.date.localeCompare(a.date) || b.startTimestamp - a.startTimestamp);
+
+  // Apply pagination
+  return shifts.slice(offset, offset + limit);
+}
+
+export async function getShiftCoverage(date: string): Promise<ShiftCoverage[]> {
+  const coverage: ShiftCoverage[] = [];
+
+  // Get all users for name lookup
+  const users = await getAllUsers();
+  const userMap = new Map(users.map(u => [u.id, u.fullName || u.username]));
+
+  // Get calls for this date
+  const startOfDay = new Date(`${date}T00:00:00+05:00`).getTime();
+  const endOfDay = new Date(`${date}T23:59:59+05:00`).getTime();
+  const calls = await queryCalls({ dateFrom: startOfDay, dateTo: endOfDay, limit: 10000 });
+
+  for (let hour = 0; hour < 24; hour++) {
+    const userIds = await redis.smembers(KEYS.shiftCoverage(date, hour)) as string[];
+
+    // Get calls for this hour
+    const hourStart = new Date(`${date}T${hour.toString().padStart(2, '0')}:00:00+05:00`).getTime();
+    const hourEnd = hourStart + 60 * 60 * 1000;
+    const hourCalls = calls.filter(c => c.callStart >= hourStart && c.callStart < hourEnd);
+    const answeredCalls = hourCalls.filter(c => c.callDuration && c.callDuration > 0);
+    const missedCalls = hourCalls.filter(c => c.callEnd && (!c.callDuration || c.callDuration === 0));
+
+    coverage.push({
+      hour,
+      operators: userIds.map(id => ({
+        userId: id,
+        operatorName: userMap.get(id) || 'Noma\'lum',
+      })),
+      callCount: hourCalls.length,
+      answeredCount: answeredCalls.length,
+      missedCount: missedCalls.length,
+      coverageStatus: userIds.length >= 2 ? 'covered' : userIds.length === 1 ? 'partial' : 'uncovered',
+    });
+  }
+
+  return coverage;
+}
+
+export async function getShiftReport(userId: string, dateFrom: string, dateTo: string): Promise<ShiftReport> {
+  const shifts = await getShiftsByUser(userId, dateFrom, dateTo);
+  const user = await getUser(userId);
+  const operatorName = user?.fullName || user?.username || 'Noma\'lum';
+
+  let totalHoursScheduled = 0;
+  let totalCallsDuringShift = 0;
+  let totalAnsweredCalls = 0;
+  let totalMissedCalls = 0;
+  let totalCallDuration = 0;
+
+  const shiftDetails: ShiftDetail[] = [];
+
+  for (const shift of shifts) {
+    const hoursScheduled = calculateShiftHours(shift.startTime, shift.endTime);
+    totalHoursScheduled += hoursScheduled;
+
+    // Get calls during this shift
+    const calls = await queryCalls({
+      dateFrom: shift.startTimestamp,
+      dateTo: shift.endTimestamp,
+      operatorName,
+      limit: 10000,
+    });
+
+    const answeredCalls = calls.filter(c => c.callDuration && c.callDuration > 0);
+    const missedCalls = calls.filter(c => c.callEnd && (!c.callDuration || c.callDuration === 0));
+
+    totalCallsDuringShift += calls.length;
+    totalAnsweredCalls += answeredCalls.length;
+    totalMissedCalls += missedCalls.length;
+    totalCallDuration += answeredCalls.reduce((sum, c) => sum + (c.callDuration || 0), 0);
+
+    shiftDetails.push({
+      shiftId: shift.id,
+      date: shift.date,
+      startTime: shift.startTime,
+      endTime: shift.endTime,
+      hoursScheduled,
+      callsDuringShift: calls.length,
+      answeredCalls: answeredCalls.length,
+      missedCalls: missedCalls.length,
+    });
+  }
+
+  return {
+    userId,
+    operatorName,
+    periodStart: new Date(`${dateFrom}T00:00:00+05:00`).getTime(),
+    periodEnd: new Date(`${dateTo}T23:59:59+05:00`).getTime(),
+    totalShifts: shifts.length,
+    totalHoursScheduled,
+    callsDuringShift: totalCallsDuringShift,
+    answeredCalls: totalAnsweredCalls,
+    missedCalls: totalMissedCalls,
+    avgCallDuration: totalAnsweredCalls > 0 ? Math.round(totalCallDuration / totalAnsweredCalls) : 0,
+    answerRate: totalCallsDuringShift > 0 ? Math.round((totalAnsweredCalls / totalCallsDuringShift) * 100) : 0,
+    shifts: shiftDetails,
   };
 }

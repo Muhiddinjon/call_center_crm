@@ -87,6 +87,34 @@ export async function GET() {
       };
     }
 
+    // Calculate stats sync comparison
+    const statsSync = {
+      binotel: {
+        incoming: binotelStats.todayIncoming,
+        outgoing: binotelStats.todayOutgoing,
+        answered: binotelStats.todayAnswered,
+        missed: binotelStats.todayMissed,
+      },
+      local: {
+        incoming: dailyStats.totalCalls,
+        outgoing: 0, // We don't track outgoing separately in daily stats
+        answered: dailyStats.answeredCalls,
+        missed: dailyStats.missedCalls,
+      },
+      diff: {
+        incoming: binotelStats.todayIncoming - dailyStats.totalCalls,
+        outgoing: binotelStats.todayOutgoing,
+        answered: binotelStats.todayAnswered - dailyStats.answeredCalls,
+        missed: binotelStats.todayMissed - dailyStats.missedCalls,
+      },
+      syncedAt: Date.now(),
+      binotelAvailable,
+      // Flag if there's significant discrepancy (>5%)
+      hasDiscrepancy: binotelAvailable &&
+        dailyStats.totalCalls > 0 &&
+        Math.abs(binotelStats.todayIncoming - dailyStats.totalCalls) / dailyStats.totalCalls > 0.05,
+    };
+
     return NextResponse.json({
       // Live stats (from Binotel or Redis fallback)
       live: {
@@ -122,6 +150,8 @@ export async function GET() {
       missedCallsCount: missedCalls.length,
       // Binotel status
       binotelAvailable,
+      // Statistics sync comparison
+      statsSync,
       // Timestamp
       timestamp: Date.now(),
     });
