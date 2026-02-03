@@ -144,11 +144,24 @@ export function ManualCallForm({ onCallCreated }: ManualCallFormProps) {
         {lookupResult && (
           <div className="text-sm">
             {lookupResult.driverInfo?.isDriver && (
-              <div className="p-2 bg-yellow-50 rounded border border-yellow-200">
-                <span className="font-medium text-yellow-800">Driver: </span>
-                {lookupResult.driverInfo.driverName || lookupResult.driverInfo.driverId}
+              <div className="p-3 bg-yellow-50 rounded-lg border border-yellow-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-medium text-yellow-800">Driver: </span>
+                  <span className="text-yellow-900">
+                    {lookupResult.driverInfo.driverName || lookupResult.driverInfo.driverId}
+                  </span>
+                </div>
                 {lookupResult.driverInfo.driverCar && (
-                  <span className="text-yellow-600 ml-2">({lookupResult.driverInfo.driverCar})</span>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-yellow-700">Mashina:</span>
+                    <span className="text-yellow-800">{lookupResult.driverInfo.driverCar}</span>
+                  </div>
+                )}
+                {lookupResult.driverInfo.managerNumber && (
+                  <div className="flex items-center justify-between bg-yellow-100 -mx-3 -mb-3 mt-2 px-3 py-2 rounded-b-lg">
+                    <span className="text-sm font-medium text-yellow-800">RM:</span>
+                    <span className="font-bold text-yellow-900 text-lg">{lookupResult.driverInfo.managerNumber}</span>
+                  </div>
                 )}
               </div>
             )}
