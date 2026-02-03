@@ -515,31 +515,79 @@ export async function deleteSession(token: string): Promise<void> {
 // ============= EVENTS =============
 
 export async function publishEvent(event: { type: string; data: unknown }): Promise<void> {
-  await redis.xadd(KEYS.eventsStream, '*', {
-    type: event.type,
-    data: JSON.stringify(event.data),
-    timestamp: Date.now().toString(),
-  });
+  try {
+    const eventId = await redis.xadd(KEYS.eventsStream, '*', {
+      type: event.type,
+      data: JSON.stringify(event.data),
+      timestamp: Date.now().toString(),
+    });
 
-  // Keep only last 1000 events
-  await redis.xtrim(KEYS.eventsStream, { strategy: 'MAXLEN', threshold: 1000 });
+    console.log(`[Event] Published ${event.type} with ID: ${eventId}`);
+
+    // Keep only last 1000 events
+    await redis.xtrim(KEYS.eventsStream, { strategy: 'MAXLEN', threshold: 1000 });
+  } catch (error) {
+    console.error(`[Event] Failed to publish ${event.type}:`, error);
+    throw error;
+  }
 }
 
 export async function getRecentEvents(lastId = '0'): Promise<Array<{ id: string; type: string; data: unknown }>> {
   try {
     // Use xrange to get events after lastId
-    const events = await redis.xrange(KEYS.eventsStream, lastId === '0' ? '-' : `(${lastId}`, '+', 100) as unknown as Array<[string, Record<string, string>]>;
+    // For new connections, start from current time to avoid replaying old events
+    const startId = lastId === '0' ? `${Date.now() - 60000}-0` : `(${lastId}`;
+    const rawEvents = await redis.xrange(KEYS.eventsStream, startId, '+', 100);
 
-    if (!events || !Array.isArray(events) || events.length === 0) return [];
+    if (!rawEvents || !Array.isArray(rawEvents) || rawEvents.length === 0) return [];
 
-    return events.map((entry) => {
-      const [id, fields] = entry;
-      return {
-        id,
-        type: fields?.type || 'unknown',
-        data: fields?.data ? JSON.parse(fields.data) : null,
-      };
-    });
+    // Parse Upstash xrange response format
+    // Upstash can return either [[id, {fields}]] or [{id, ...fields}] format
+    const result: Array<{ id: string; type: string; data: unknown }> = [];
+
+    for (const entry of rawEvents) {
+      try {
+        let id: string;
+        let fields: Record<string, string>;
+
+        if (Array.isArray(entry) && entry.length >= 2) {
+          // Format: [id, {type, data, timestamp}]
+          [id, fields] = entry as [string, Record<string, string>];
+        } else if (typeof entry === 'object' && entry !== null) {
+          // Format: {id, type, data, timestamp} or nested format
+          const obj = entry as Record<string, unknown>;
+          if ('id' in obj && typeof obj.id === 'string') {
+            id = obj.id;
+            fields = obj as unknown as Record<string, string>;
+          } else {
+            // Unknown format, skip
+            console.warn('Unknown event format:', JSON.stringify(entry).slice(0, 200));
+            continue;
+          }
+        } else {
+          continue;
+        }
+
+        if (!id || !fields) continue;
+
+        const eventType = fields.type || 'unknown';
+        let eventData: unknown = null;
+
+        if (fields.data) {
+          try {
+            eventData = typeof fields.data === 'string' ? JSON.parse(fields.data) : fields.data;
+          } catch {
+            eventData = fields.data;
+          }
+        }
+
+        result.push({ id, type: eventType, data: eventData });
+      } catch (parseError) {
+        console.warn('Failed to parse event entry:', parseError);
+      }
+    }
+
+    return result;
   } catch (error) {
     console.error('getRecentEvents error:', error);
     return [];

@@ -27,6 +27,7 @@ export function useRealtime(options: UseRealtimeOptions = {}) {
     eventSourceRef.current = eventSource;
 
     eventSource.onopen = () => {
+      console.log('[SSE Client] Connection opened');
       setIsConnected(true);
       reconnectAttemptsRef.current = 0;
     };
@@ -34,10 +35,17 @@ export function useRealtime(options: UseRealtimeOptions = {}) {
     eventSource.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data) as RealtimeEvent;
+
+        // Log non-ping events
+        if (data.type && data.type !== 'connected') {
+          console.log('[SSE Client] Received event:', data.type, data.id || '');
+        }
+
         setLastEvent(data);
 
         switch (data.type) {
           case 'incoming_call':
+            console.log('[SSE Client] Incoming call received:', data.data);
             if (data.data && options.onIncomingCall) {
               options.onIncomingCall(data.data as CallLog);
             }
@@ -54,13 +62,14 @@ export function useRealtime(options: UseRealtimeOptions = {}) {
             }
             break;
           case 'missed_call':
+            console.log('[SSE Client] Missed call received:', data.data);
             if (data.data && options.onMissedCall) {
               options.onMissedCall(data.data);
             }
             break;
         }
       } catch (error) {
-        console.error('Failed to parse SSE event:', error);
+        console.error('[SSE Client] Failed to parse SSE event:', error);
       }
     };
 

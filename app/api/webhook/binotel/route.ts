@@ -54,15 +54,20 @@ export async function POST(request: NextRequest) {
 
       // Publish real-time event for incoming calls
       if (callData.callType === 'incoming') {
-        await publishEvent({
-          type: 'incoming_call',
-          data: {
-            ...call,
-            driverInfo,
-            clientInfo,
-          },
-        });
-        console.log(`Incoming call notification sent: ${callData.phoneNumber}`);
+        console.log(`[Webhook] Publishing incoming_call event for: ${callData.phoneNumber}`);
+        try {
+          await publishEvent({
+            type: 'incoming_call',
+            data: {
+              ...call,
+              driverInfo,
+              clientInfo,
+            },
+          });
+          console.log(`[Webhook] incoming_call event published successfully for: ${callData.phoneNumber}`);
+        } catch (publishError) {
+          console.error(`[Webhook] Failed to publish incoming_call event:`, publishError);
+        }
       }
     } else if (['call.end', 'call_end', 'hangup'].includes(callData.event)) {
       // Update call end time

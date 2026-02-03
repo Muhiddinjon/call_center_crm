@@ -115,6 +115,7 @@ export interface LookupResult {
 
 // Real-time event types
 export interface RealtimeEvent {
+  id?: string;
   type: 'incoming_call' | 'call_ended' | 'call_updated' | 'connected' | 'missed_call';
   data?: CallLog | MissedCall | { callId: string } | null;
   timestamp?: number;
