@@ -185,3 +185,38 @@ export interface Topic {
   order: number;
   createdAt: number;
 }
+
+// Contact type (saved caller names)
+export interface Contact {
+  phoneNumber: string;
+  name: string;
+  notes?: string;
+  createdAt: number;
+  updatedAt: number;
+  createdBy?: string;
+}
+
+// Operator statistics
+export interface OperatorStats {
+  operatorName: string;
+  totalCalls: number;
+  answeredCalls: number;
+  missedCalls: number;
+  avgDuration: number;
+  totalDuration: number;
+  answerRate: number;
+}
+
+// Missed call type
+export interface MissedCall {
+  id: string;
+  callId: string;
+  phoneNumber: string;
+  callStart: number;
+  internalNumber?: string;
+  contactName?: string;
+  isDriver: boolean;
+  driverName?: string;
+  callbackAt?: number;
+  callbackBy?: string;
+}

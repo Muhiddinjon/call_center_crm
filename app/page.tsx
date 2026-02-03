@@ -7,6 +7,7 @@ import { CallForm } from '@/components/dashboard/CallForm';
 import { ManualCallForm } from '@/components/dashboard/ManualCallForm';
 import { PhoneHistory } from '@/components/dashboard/PhoneHistory';
 import { IncomingCallModal } from '@/components/dashboard/IncomingCallModal';
+import { MissedCalls } from '@/components/dashboard/MissedCalls';
 import { useRealtime } from '@/hooks/useRealtime';
 import type { CallLog } from '@/lib/types';
 
@@ -132,13 +133,21 @@ export default function DashboardPage() {
       {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Left column - Manual call form */}
-          <div>
+          {/* Left column - Manual call form + Missed calls */}
+          <div className="space-y-6">
             <ManualCallForm
               onCallCreated={(call) => {
                 setSelectedCall(call);
                 setRefreshTrigger((t) => t + 1);
               }}
+            />
+            <MissedCalls
+              operatorName={user.fullName || user.username}
+              onCallback={(phoneNumber) => {
+                // Open phone dialer with sip protocol
+                window.location.href = `sip:${phoneNumber}`;
+              }}
+              key={`missed-${refreshTrigger}`}
             />
           </div>
 

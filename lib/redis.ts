@@ -1,5 +1,5 @@
 import { Redis } from '@upstash/redis';
-import type { CallLog, User, Session, CallFilters, ReportStats, Topic, DEFAULT_TOPICS } from './types';
+import type { CallLog, User, Session, CallFilters, ReportStats, Topic, Contact, OperatorStats, MissedCall } from './types';
 import { generateId } from './utils';
 
 // Initialize Redis client
@@ -34,6 +34,13 @@ export const KEYS = {
   // Topics
   topic: (id: string) => `topic:${id}`,
   topicsList: 'topics:list',
+
+  // Contacts (saved caller names)
+  contact: (phone: string) => `contact:${phone}`,
+  contactsList: 'contacts:list',
+
+  // Missed calls
+  missedCalls: 'calls:missed',
 };
 
 // Helper function to remove null/undefined values for Redis storage
@@ -600,4 +607,261 @@ export async function initializeDefaultTopics(): Promise<void> {
       await createTopic(topicName);
     }
   }
+}
+
+// ============= CONTACT OPERATIONS =============
+
+export async function saveContact(phoneNumber: string, name: string, notes?: string, createdBy?: string): Promise<Contact> {
+  const { normalizePhone } = await import('./utils');
+  const normalizedPhone = normalizePhone(phoneNumber);
+  const now = Date.now();
+
+  const existing = await getContact(normalizedPhone);
+
+  const contact: Contact = {
+    phoneNumber: normalizedPhone,
+    name,
+    notes: notes || existing?.notes,
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+    createdBy: createdBy || existing?.createdBy,
+  };
+
+  const pipeline = redis.pipeline();
+  pipeline.hset(KEYS.contact(normalizedPhone), cleanForRedis(contact as unknown as Record<string, unknown>));
+  pipeline.sadd(KEYS.contactsList, normalizedPhone);
+  await pipeline.exec();
+
+  return contact;
+}
+
+export async function getContact(phoneNumber: string): Promise<Contact | null> {
+  const { normalizePhone, getPhoneSearchVariants } = await import('./utils');
+  const normalizedPhone = normalizePhone(phoneNumber);
+
+  // Try exact match first
+  let data = await redis.hgetall(KEYS.contact(normalizedPhone));
+  if (data && Object.keys(data).length > 0) {
+    return data as unknown as Contact;
+  }
+
+  // Try variants
+  const variants = getPhoneSearchVariants(phoneNumber);
+  for (const variant of variants) {
+    data = await redis.hgetall(KEYS.contact(variant));
+    if (data && Object.keys(data).length > 0) {
+      return data as unknown as Contact;
+    }
+  }
+
+  return null;
+}
+
+export async function deleteContact(phoneNumber: string): Promise<boolean> {
+  const { normalizePhone } = await import('./utils');
+  const normalizedPhone = normalizePhone(phoneNumber);
+
+  const pipeline = redis.pipeline();
+  pipeline.del(KEYS.contact(normalizedPhone));
+  pipeline.srem(KEYS.contactsList, normalizedPhone);
+  await pipeline.exec();
+
+  return true;
+}
+
+export async function getAllContacts(): Promise<Contact[]> {
+  const phones = await redis.smembers(KEYS.contactsList);
+  if (!phones || phones.length === 0) return [];
+
+  const pipeline = redis.pipeline();
+  phones.forEach(phone => pipeline.hgetall(KEYS.contact(phone)));
+  const results = await pipeline.exec();
+
+  return results.filter(Boolean) as unknown as Contact[];
+}
+
+export async function searchContacts(query: string): Promise<Contact[]> {
+  const contacts = await getAllContacts();
+  const lowerQuery = query.toLowerCase();
+
+  return contacts.filter(c =>
+    c.name.toLowerCase().includes(lowerQuery) ||
+    c.phoneNumber.includes(query)
+  );
+}
+
+// ============= MISSED CALLS OPERATIONS =============
+
+export async function addMissedCall(call: CallLog): Promise<void> {
+  const missedCall: MissedCall = {
+    id: call.id,
+    callId: call.callId,
+    phoneNumber: call.phoneNumber,
+    callStart: call.callStart,
+    internalNumber: call.internalNumber,
+    isDriver: call.isDriver === true || call.isDriver === 'true',
+    driverName: call.driverName,
+  };
+
+  // Get contact name if exists
+  const contact = await getContact(call.phoneNumber);
+  if (contact) {
+    missedCall.contactName = contact.name;
+  }
+
+  await redis.zadd(KEYS.missedCalls, {
+    score: call.callStart,
+    member: JSON.stringify(missedCall)
+  });
+}
+
+export async function getMissedCalls(limit = 50): Promise<MissedCall[]> {
+  const results = await redis.zrange(KEYS.missedCalls, 0, limit - 1, { rev: true });
+
+  return results.map(item => {
+    if (typeof item === 'string') {
+      return JSON.parse(item) as MissedCall;
+    }
+    return item as unknown as MissedCall;
+  });
+}
+
+export async function markMissedCallAsCallback(callId: string, operatorName: string): Promise<void> {
+  // Get all missed calls
+  const missedCalls = await getMissedCalls(1000);
+  const missedCall = missedCalls.find(c => c.callId === callId || c.id === callId);
+
+  if (missedCall) {
+    // Remove old entry
+    await redis.zrem(KEYS.missedCalls, JSON.stringify(missedCall));
+
+    // Add updated entry with callback info
+    missedCall.callbackAt = Date.now();
+    missedCall.callbackBy = operatorName;
+
+    await redis.zadd(KEYS.missedCalls, {
+      score: missedCall.callStart,
+      member: JSON.stringify(missedCall)
+    });
+  }
+}
+
+export async function removeMissedCall(callId: string): Promise<void> {
+  const missedCalls = await getMissedCalls(1000);
+  const missedCall = missedCalls.find(c => c.callId === callId || c.id === callId);
+
+  if (missedCall) {
+    await redis.zrem(KEYS.missedCalls, JSON.stringify(missedCall));
+  }
+}
+
+export async function getUnhandledMissedCalls(): Promise<MissedCall[]> {
+  const missedCalls = await getMissedCalls(1000);
+  return missedCalls.filter(c => !c.callbackAt);
+}
+
+// ============= OPERATOR STATISTICS =============
+
+export async function getOperatorStats(filters: CallFilters): Promise<OperatorStats[]> {
+  const calls = await queryCalls({ ...filters, limit: 10000 });
+
+  // Group by operator
+  const operatorMap = new Map<string, {
+    totalCalls: number;
+    answeredCalls: number;
+    missedCalls: number;
+    totalDuration: number;
+  }>();
+
+  calls.forEach(call => {
+    const operator = call.operatorName || 'Noma\'lum';
+
+    if (!operatorMap.has(operator)) {
+      operatorMap.set(operator, {
+        totalCalls: 0,
+        answeredCalls: 0,
+        missedCalls: 0,
+        totalDuration: 0,
+      });
+    }
+
+    const stats = operatorMap.get(operator)!;
+    stats.totalCalls++;
+
+    if (call.callEnd && call.callDuration && call.callDuration > 0) {
+      stats.answeredCalls++;
+      stats.totalDuration += call.callDuration;
+    } else if (call.callEnd && (!call.callDuration || call.callDuration === 0)) {
+      stats.missedCalls++;
+    }
+  });
+
+  // Convert to array
+  const result: OperatorStats[] = [];
+  operatorMap.forEach((stats, operatorName) => {
+    result.push({
+      operatorName,
+      totalCalls: stats.totalCalls,
+      answeredCalls: stats.answeredCalls,
+      missedCalls: stats.missedCalls,
+      totalDuration: stats.totalDuration,
+      avgDuration: stats.answeredCalls > 0
+        ? Math.round(stats.totalDuration / stats.answeredCalls)
+        : 0,
+      answerRate: stats.totalCalls > 0
+        ? Math.round((stats.answeredCalls / stats.totalCalls) * 100)
+        : 0,
+    });
+  });
+
+  // Sort by total calls descending
+  return result.sort((a, b) => b.totalCalls - a.totalCalls);
+}
+
+export async function getDailyStats(date?: Date): Promise<{
+  totalCalls: number;
+  answeredCalls: number;
+  missedCalls: number;
+  avgDuration: number;
+  byHour: Record<number, number>;
+}> {
+  const targetDate = date || new Date();
+  const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate()).getTime();
+  const endOfDay = startOfDay + 24 * 60 * 60 * 1000;
+
+  const calls = await queryCalls({
+    dateFrom: startOfDay,
+    dateTo: endOfDay,
+    limit: 10000,
+  });
+
+  let answeredCalls = 0;
+  let missedCalls = 0;
+  let totalDuration = 0;
+  const byHour: Record<number, number> = {};
+
+  // Initialize hours
+  for (let i = 0; i < 24; i++) {
+    byHour[i] = 0;
+  }
+
+  calls.forEach(call => {
+    const hour = new Date(call.callStart).getHours();
+    byHour[hour]++;
+
+    if (call.callEnd && call.callDuration && call.callDuration > 0) {
+      answeredCalls++;
+      totalDuration += call.callDuration;
+    } else if (call.callEnd) {
+      missedCalls++;
+    }
+  });
+
+  return {
+    totalCalls: calls.length,
+    answeredCalls,
+    missedCalls,
+    avgDuration: answeredCalls > 0 ? Math.round(totalDuration / answeredCalls) : 0,
+    byHour,
+  };
 }

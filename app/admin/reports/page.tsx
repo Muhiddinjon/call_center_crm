@@ -124,12 +124,12 @@ export default function ReportsPage() {
       }));
 
       try {
-        const response = await fetch(`/api/calls/${callId}/audio`);
+        const response = await fetch(`/api/calls/${callId}/recording`);
         if (response.ok) {
           const data = await response.json();
           setExpandedRows(prev => ({
             ...prev,
-            [callId]: { loading: false, audioUrl: data.audioUrl }
+            [callId]: { loading: false, audioUrl: data.url }
           }));
         } else {
           setExpandedRows(prev => ({

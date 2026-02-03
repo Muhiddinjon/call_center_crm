@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Save, Loader2 } from 'lucide-react';
-import type { CallLog, Topic } from '@/lib/types';
+import { Save, Loader2, UserPlus } from 'lucide-react';
+import type { CallLog, Topic, Contact } from '@/lib/types';
 import { formatPhone } from '@/lib/utils';
 import { REGIONS, DEFAULT_TOPICS } from '@/lib/types';
 
@@ -15,6 +15,9 @@ interface CallFormProps {
 export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
   const [loading, setSaving] = useState(false);
   const [topics, setTopics] = useState<Topic[]>([]);
+  const [contact, setContact] = useState<Contact | null>(null);
+  const [contactName, setContactName] = useState('');
+  const [savingContact, setSavingContact] = useState(false);
   const [formData, setFormData] = useState({
     callerType: '',
     region: '',
@@ -33,6 +36,25 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
       })
       .catch(console.error);
   }, []);
+
+  // Fetch contact when call changes
+  useEffect(() => {
+    if (call?.phoneNumber) {
+      fetch(`/api/contacts/${encodeURIComponent(call.phoneNumber)}`)
+        .then((res) => res.ok ? res.json() : null)
+        .then((data) => {
+          setContact(data);
+          setContactName(data?.name || '');
+        })
+        .catch(() => {
+          setContact(null);
+          setContactName('');
+        });
+    } else {
+      setContact(null);
+      setContactName('');
+    }
+  }, [call?.phoneNumber]);
 
   useEffect(() => {
     if (call) {
@@ -53,6 +75,33 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
       });
     }
   }, [call]);
+
+  // Save contact name
+  const handleSaveContact = async () => {
+    if (!call || !contactName.trim()) return;
+
+    setSavingContact(true);
+    try {
+      const response = await fetch('/api/contacts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          phoneNumber: call.phoneNumber,
+          name: contactName.trim(),
+          createdBy: operatorName,
+        }),
+      });
+
+      if (response.ok) {
+        const savedContact = await response.json();
+        setContact(savedContact);
+      }
+    } catch (error) {
+      console.error('Save contact error:', error);
+    } finally {
+      setSavingContact(false);
+    }
+  };
 
   // Check if all required fields are filled
   const isFormValid = formData.callerType && formData.region && formData.topic;
@@ -123,6 +172,43 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
             className="form-input bg-gray-50"
           />
         </div>
+
+        {/* Contact Name - show if not a driver */}
+        {!isDriverCall && (
+          <div>
+            <label className="form-label">
+              Qo&apos;ng&apos;iroqchi ismi
+              {contact && <span className="text-green-600 ml-2">(Saqlangan)</span>}
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={contactName}
+                onChange={(e) => setContactName(e.target.value)}
+                className="form-input flex-1"
+                placeholder="Ismini kiriting..."
+              />
+              <button
+                type="button"
+                onClick={handleSaveContact}
+                disabled={savingContact || !contactName.trim() || contactName === contact?.name}
+                className="btn btn-secondary px-3"
+                title="Kontaktni saqlash"
+              >
+                {savingContact ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : (
+                  <UserPlus className="w-5 h-5" />
+                )}
+              </button>
+            </div>
+            {contact && (
+              <p className="text-xs text-gray-500 mt-1">
+                Keyingi safar bu raqamdan qo&apos;ng&apos;iroq kelganda ism ko&apos;rinadi
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Driver Info - shows if driver or has RM */}
         {(isDriverCall || call.managerNumber) && (

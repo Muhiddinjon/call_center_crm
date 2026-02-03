@@ -12,6 +12,8 @@ import {
   Settings,
   LogOut,
   ChevronLeft,
+  BarChart3,
+  Activity,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -24,6 +26,8 @@ interface User {
 
 const navItems = [
   { href: '/admin', icon: LayoutDashboard, label: 'Dashboard' },
+  { href: '/admin/monitoring', icon: Activity, label: 'Monitoring' },
+  { href: '/admin/stats', icon: BarChart3, label: 'Statistika' },
   { href: '/admin/reports', icon: FileText, label: 'Hisobotlar' },
   { href: '/admin/users', icon: Users, label: 'Foydalanuvchilar' },
   { href: '/admin/topics', icon: Tag, label: 'Murojaat turlari' },

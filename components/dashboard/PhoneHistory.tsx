@@ -14,6 +14,11 @@ import {
   MapPin,
   Star,
   Briefcase,
+  Play,
+  Pause,
+  Loader2,
+  Volume2,
+  X,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import type { CallLog } from '@/lib/types';
@@ -45,6 +50,42 @@ export function PhoneHistory({ phoneNumber, currentCallId, onSelectCall }: Phone
   const [contactInfo, setContactInfo] = useState<ContactInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<'timeline' | 'comments'>('timeline');
+
+  // Recording state
+  const [recordingCall, setRecordingCall] = useState<CallLog | null>(null);
+  const [recordingUrl, setRecordingUrl] = useState<string | null>(null);
+  const [recordingLoading, setRecordingLoading] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  // Fetch recording URL
+  const fetchRecording = async (call: CallLog) => {
+    setRecordingCall(call);
+    setRecordingLoading(true);
+    setRecordingUrl(null);
+
+    try {
+      const response = await fetch(`/api/calls/${call.id}/recording`);
+      if (response.ok) {
+        const data = await response.json();
+        setRecordingUrl(data.url);
+      } else {
+        alert('Yozuv topilmadi yoki mavjud emas');
+        setRecordingCall(null);
+      }
+    } catch (error) {
+      console.error('Fetch recording error:', error);
+      alert('Yozuvni yuklashda xatolik');
+      setRecordingCall(null);
+    } finally {
+      setRecordingLoading(false);
+    }
+  };
+
+  const closeRecording = () => {
+    setRecordingCall(null);
+    setRecordingUrl(null);
+    setIsPlaying(false);
+  };
 
   useEffect(() => {
     if (!phoneNumber) {
@@ -247,24 +288,39 @@ export function PhoneHistory({ phoneNumber, currentCallId, onSelectCall }: Phone
                         </span>
                       </div>
 
-                      <div className="flex flex-wrap gap-2 text-xs">
-                        {call.region && (
-                          <span className="flex items-center gap-1 text-gray-600">
-                            <MapPin className="w-3 h-3" />
-                            {call.region}
-                          </span>
-                        )}
-                        {call.operatorName && (
-                          <span className="flex items-center gap-1 text-gray-600">
-                            <Briefcase className="w-3 h-3" />
-                            {call.operatorName}
-                          </span>
-                        )}
-                        {call.callDuration && (
-                          <span className="flex items-center gap-1 text-gray-600">
-                            <Clock className="w-3 h-3" />
-                            {formatDuration(call.callDuration)}
-                          </span>
+                      <div className="flex items-center justify-between">
+                        <div className="flex flex-wrap gap-2 text-xs">
+                          {call.region && (
+                            <span className="flex items-center gap-1 text-gray-600">
+                              <MapPin className="w-3 h-3" />
+                              {call.region}
+                            </span>
+                          )}
+                          {call.operatorName && (
+                            <span className="flex items-center gap-1 text-gray-600">
+                              <Briefcase className="w-3 h-3" />
+                              {call.operatorName}
+                            </span>
+                          )}
+                          {call.callDuration && (
+                            <span className="flex items-center gap-1 text-gray-600">
+                              <Clock className="w-3 h-3" />
+                              {formatDuration(call.callDuration)}
+                            </span>
+                          )}
+                        </div>
+                        {/* Recording button */}
+                        {call.callDuration && call.callDuration > 0 && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              fetchRecording(call);
+                            }}
+                            className="p-1.5 bg-purple-100 text-purple-600 rounded-full hover:bg-purple-200 transition-colors"
+                            title="Yozuvni tinglash"
+                          >
+                            <Volume2 className="w-3.5 h-3.5" />
+                          </button>
                         )}
                       </div>
 
@@ -349,6 +405,109 @@ export function PhoneHistory({ phoneNumber, currentCallId, onSelectCall }: Phone
           </div>
         )}
       </div>
+
+      {/* Recording Modal */}
+      {recordingCall && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 overflow-hidden">
+            {/* Header */}
+            <div className="bg-gradient-to-r from-purple-600 to-purple-700 text-white p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-white/20 rounded-full flex items-center justify-center">
+                    <Volume2 className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold">Qo&apos;ng&apos;iroq yozuvi</h3>
+                    <p className="text-sm text-purple-200">
+                      {format(new Date(recordingCall.callStart), 'dd.MM.yyyy HH:mm')}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={closeRecording}
+                  className="p-2 hover:bg-white/20 rounded-full transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="p-6">
+              {recordingLoading ? (
+                <div className="flex flex-col items-center justify-center py-8">
+                  <Loader2 className="w-10 h-10 animate-spin text-purple-600 mb-3" />
+                  <p className="text-gray-500">Yozuv yuklanmoqda...</p>
+                </div>
+              ) : recordingUrl ? (
+                <div className="space-y-4">
+                  {/* Call info */}
+                  <div className="bg-gray-50 rounded-lg p-3 space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Telefon:</span>
+                      <span className="font-medium">{formatPhone(recordingCall.phoneNumber)}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">Turi:</span>
+                      <span className={cn(
+                        'px-2 py-0.5 rounded text-xs',
+                        recordingCall.callType === 'incoming'
+                          ? 'bg-green-100 text-green-700'
+                          : 'bg-blue-100 text-blue-700'
+                      )}>
+                        {recordingCall.callType === 'incoming' ? 'Kiruvchi' : 'Chiquvchi'}
+                      </span>
+                    </div>
+                    {recordingCall.callDuration && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Davomiyligi:</span>
+                        <span className="font-medium">{formatDuration(recordingCall.callDuration)}</span>
+                      </div>
+                    )}
+                    {recordingCall.operatorName && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Operator:</span>
+                        <span className="font-medium">{recordingCall.operatorName}</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Audio player */}
+                  <div className="bg-purple-50 rounded-lg p-4">
+                    <audio
+                      controls
+                      className="w-full"
+                      onPlay={() => setIsPlaying(true)}
+                      onPause={() => setIsPlaying(false)}
+                      onEnded={() => setIsPlaying(false)}
+                    >
+                      <source src={recordingUrl} type="audio/mpeg" />
+                      Brauzeringiz audio elementni qo&apos;llab-quvvatlamaydi.
+                    </audio>
+                  </div>
+
+                  {/* Download link */}
+                  <a
+                    href={recordingUrl}
+                    download
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block w-full text-center py-2 text-purple-600 hover:text-purple-700 text-sm font-medium"
+                  >
+                    Yuklab olish
+                  </a>
+                </div>
+              ) : (
+                <div className="text-center py-8 text-gray-500">
+                  <Volume2 className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+                  <p>Yozuv topilmadi</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
