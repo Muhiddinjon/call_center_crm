@@ -194,21 +194,23 @@ export async function queryCalls(filters: CallFilters): Promise<CallLog[]> {
 
   // Get call IDs from sorted set with date range
   if (dateFrom || dateTo) {
-    callIds = await redis.zrange(
-      KEYS.callsByDate,
-      dateFrom || 0,
-      dateTo || Date.now(),
-      { byScore: true, rev: true, offset, count: limit }
-    );
+    // Use zrange with byScore option for date range queries
+    const minScore = dateFrom || 0;
+    const maxScore = dateTo || Date.now();
+
+    // Get all IDs in the score range using zrange with byScore
+    const allIds = await redis.zrange(KEYS.callsByDate, minScore, maxScore, {
+      byScore: true,
+    }) as string[];
+
+    // Reverse for newest first, then apply offset and limit
+    const reversedIds = [...allIds].reverse();
+    callIds = reversedIds.slice(offset, offset + limit);
   } else {
-    // Get latest calls
-    const total = await redis.zcard(KEYS.callsByDate);
-    callIds = await redis.zrange(
-      KEYS.callsByDate,
-      Math.max(0, total - offset - limit),
-      total - offset - 1,
-      { rev: true }
-    );
+    // Get latest calls - use negative indices for reverse order
+    const allIds = await redis.zrange(KEYS.callsByDate, 0, -1) as string[];
+    const reversedIds = [...allIds].reverse();
+    callIds = reversedIds.slice(offset, offset + limit);
   }
 
   if (!callIds || callIds.length === 0) return [];

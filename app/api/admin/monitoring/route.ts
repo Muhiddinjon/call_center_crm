@@ -1,61 +1,103 @@
 import { NextResponse } from 'next/server';
 import { getDashboardStats, getOnlineCalls, getEmployeesStatus } from '@/lib/binotel';
-import { getDailyStats, getUnhandledMissedCalls } from '@/lib/redis';
+import { getDailyStats, getUnhandledMissedCalls, queryCalls } from '@/lib/redis';
 
 // GET - Get real-time monitoring data
 export async function GET() {
   try {
-    const [dashboardStats, onlineCalls, employeesData, dailyStats, missedCalls] = await Promise.all([
-      getDashboardStats(),
-      getOnlineCalls(),
-      getEmployeesStatus(),
+    // Get Redis data first (always available)
+    const [dailyStats, missedCalls] = await Promise.all([
       getDailyStats(),
       getUnhandledMissedCalls(),
     ]);
 
-    // Parse employees
-    const employees: Array<{
+    // Try to get Binotel data, but don't fail if unavailable
+    let binotelStats = {
+      onlineCalls: 0,
+      todayIncoming: 0,
+      todayOutgoing: 0,
+      todayAnswered: 0,
+      todayMissed: 0,
+      avgDuration: 0,
+      employeesOnline: 0,
+      employeesTotal: 0,
+    };
+    let onlineCalls: Array<{
+      generalCallID: string;
+      externalNumber: string;
+      internalNumber: string;
+      callType: 'incoming' | 'outgoing';
+      startTime: number;
+    }> = [];
+    let employees: Array<{
       id: string;
       name: string;
       internalNumber: string;
       isOnline: boolean;
       isBusy: boolean;
     }> = [];
+    let binotelAvailable = false;
 
-    if (employeesData.status === 'success' && employeesData.listOfEmployees) {
-      const employeeList = employeesData.listOfEmployees as Record<
-        string,
-        {
-          employeeID?: string;
-          name?: string;
-          internalNumber?: string;
-          isOnline?: string | number;
-          isBusy?: string | number;
+    try {
+      const [dashboardStats, onlineCallsData, employeesData] = await Promise.all([
+        getDashboardStats(),
+        getOnlineCalls(),
+        getEmployeesStatus(),
+      ]);
+
+      binotelStats = dashboardStats;
+      onlineCalls = onlineCallsData;
+      binotelAvailable = true;
+
+      // Parse employees
+      if (employeesData.status === 'success' && employeesData.listOfEmployees) {
+        const employeeList = employeesData.listOfEmployees as Record<
+          string,
+          {
+            employeeID?: string;
+            name?: string;
+            internalNumber?: string;
+            isOnline?: string | number;
+            isBusy?: string | number;
+          }
+        >;
+
+        for (const [id, emp] of Object.entries(employeeList)) {
+          employees.push({
+            id: emp.employeeID || id,
+            name: emp.name || 'Noma\'lum',
+            internalNumber: emp.internalNumber || '',
+            isOnline: emp.isOnline === '1' || emp.isOnline === 1,
+            isBusy: emp.isBusy === '1' || emp.isBusy === 1,
+          });
         }
-      >;
-
-      for (const [id, emp] of Object.entries(employeeList)) {
-        employees.push({
-          id: emp.employeeID || id,
-          name: emp.name || 'Noma\'lum',
-          internalNumber: emp.internalNumber || '',
-          isOnline: emp.isOnline === '1' || emp.isOnline === 1,
-          isBusy: emp.isBusy === '1' || emp.isBusy === 1,
-        });
       }
+    } catch (binotelError) {
+      console.warn('Binotel API unavailable, using Redis data only:', binotelError);
+      // Use Redis data to fill in stats
+      binotelStats = {
+        onlineCalls: 0,
+        todayIncoming: dailyStats.totalCalls,
+        todayOutgoing: 0,
+        todayAnswered: dailyStats.answeredCalls,
+        todayMissed: dailyStats.missedCalls,
+        avgDuration: dailyStats.avgDuration,
+        employeesOnline: 0,
+        employeesTotal: 0,
+      };
     }
 
     return NextResponse.json({
-      // Live stats from Binotel
+      // Live stats (from Binotel or Redis fallback)
       live: {
-        onlineCalls: dashboardStats.onlineCalls,
-        todayIncoming: dashboardStats.todayIncoming,
-        todayOutgoing: dashboardStats.todayOutgoing,
-        todayAnswered: dashboardStats.todayAnswered,
-        todayMissed: dashboardStats.todayMissed,
-        avgDuration: dashboardStats.avgDuration,
-        employeesOnline: dashboardStats.employeesOnline,
-        employeesTotal: dashboardStats.employeesTotal,
+        onlineCalls: binotelStats.onlineCalls,
+        todayIncoming: binotelStats.todayIncoming || dailyStats.totalCalls,
+        todayOutgoing: binotelStats.todayOutgoing,
+        todayAnswered: binotelStats.todayAnswered || dailyStats.answeredCalls,
+        todayMissed: binotelStats.todayMissed || dailyStats.missedCalls,
+        avgDuration: binotelStats.avgDuration || dailyStats.avgDuration,
+        employeesOnline: binotelStats.employeesOnline,
+        employeesTotal: binotelStats.employeesTotal,
       },
       // Online calls details
       activeCalls: onlineCalls.map((call) => ({
@@ -68,7 +110,6 @@ export async function GET() {
       })),
       // Employees status
       employees: employees.sort((a, b) => {
-        // Sort: online & busy first, then online, then offline
         if (a.isOnline && a.isBusy && !(b.isOnline && b.isBusy)) return -1;
         if (b.isOnline && b.isBusy && !(a.isOnline && a.isBusy)) return 1;
         if (a.isOnline && !b.isOnline) return -1;
@@ -79,11 +120,38 @@ export async function GET() {
       dailyStats,
       // Unhandled missed calls count
       missedCallsCount: missedCalls.length,
+      // Binotel status
+      binotelAvailable,
       // Timestamp
       timestamp: Date.now(),
     });
   } catch (error) {
     console.error('Monitoring API error:', error);
-    return NextResponse.json({ error: 'Internal error' }, { status: 500 });
+    // Return empty data instead of error
+    return NextResponse.json({
+      live: {
+        onlineCalls: 0,
+        todayIncoming: 0,
+        todayOutgoing: 0,
+        todayAnswered: 0,
+        todayMissed: 0,
+        avgDuration: 0,
+        employeesOnline: 0,
+        employeesTotal: 0,
+      },
+      activeCalls: [],
+      employees: [],
+      dailyStats: {
+        totalCalls: 0,
+        answeredCalls: 0,
+        missedCalls: 0,
+        avgDuration: 0,
+        byHour: {},
+      },
+      missedCallsCount: 0,
+      binotelAvailable: false,
+      timestamp: Date.now(),
+      error: 'Data loading failed',
+    });
   }
 }
