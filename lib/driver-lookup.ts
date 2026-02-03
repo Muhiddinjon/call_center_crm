@@ -20,7 +20,9 @@ export async function lookupByPhone(phoneNumber: string): Promise<LookupResult> 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
 
-    const response = await fetch(`${DRIVER_API_URL}/api/driver/lookup?phone=${encodeURIComponent(normalizedPhone)}`, {
+    // Use assign-new-driver endpoint - it returns both driver and client info
+    const phoneDigits = normalizedPhone.replace(/\D/g, '').slice(-9);
+    const response = await fetch(`${DRIVER_API_URL}/api/assign-new-driver?phoneNumber=${encodeURIComponent(phoneDigits)}`, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -45,16 +47,14 @@ export async function lookupByPhone(phoneNumber: string): Promise<LookupResult> 
 
     const result: LookupResult = {};
 
-    // Parse driver info
-    if (data.driver || data.is_driver) {
-      const driver = data.driver || data;
-      result.driverInfo = parseDriverInfo(driver);
+    // Parse driver info from assign-new-driver response
+    if (data.driver) {
+      result.driverInfo = parseDriverInfo(data.driver);
     }
 
-    // Parse client info
-    if (data.client || data.is_client) {
-      const client = data.client || data;
-      result.clientInfo = parseClientInfo(client);
+    // Parse client info from assign-new-driver response
+    if (data.client) {
+      result.clientInfo = parseClientInfo(data.client);
     }
 
     // Cache the result
@@ -83,16 +83,20 @@ function parseDriverInfo(data: any): DriverInfo {
     }
   }
 
-  // Parse region from route info
+  // Parse region from API response
   let region: string | undefined;
-  if (data.route) {
-    region = data.route.departure_region || data.route.arrival_region;
+  if (data.region_name) {
+    region = data.region_name;
+  } else if (data.base_route?.departure?.region_name) {
+    region = data.base_route.departure.region_name;
+  } else if (data.base_route?.arrival?.region_name) {
+    region = data.base_route.arrival.region_name;
   }
 
   return {
     isDriver: true,
     driverId: data.id?.toString() || data.driver_id?.toString(),
-    driverName: data.full_name || data.name || data.driver_name,
+    driverName: data.name || data.full_name || data.driver_name,
     driverCar: data.car_model || data.car || formatCarInfo(data),
     driverRating: data.rating?.toString(),
     driverStatus: data.status || data.driver_status,
@@ -100,8 +104,9 @@ function parseDriverInfo(data: any): DriverInfo {
     extraInfo: {
       region,
       phone: data.phone,
-      route: data.route,
+      base_route: data.base_route,
       existing_assignment: data.existing_assignment,
+      recommended_assignment: data.recommended_assignment,
     },
   };
 }
@@ -111,7 +116,7 @@ function parseClientInfo(data: any): ClientInfo {
   return {
     isClient: true,
     clientId: data.id?.toString() || data.client_id?.toString(),
-    clientName: data.full_name || data.name || data.client_name,
+    clientName: data.name?.trim() || data.full_name || data.client_name,
     clientPhone: data.phone,
     clientEmail: data.email,
     totalOrders: data.total_orders || data.orders_count,
