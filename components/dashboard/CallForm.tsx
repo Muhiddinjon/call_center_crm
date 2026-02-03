@@ -142,9 +142,9 @@ export function CallForm({ call, operatorName, onSaved }: CallFormProps) {
               </div>
             )}
             {call.managerNumber && (
-              <div className="flex justify-between">
-                <span className="text-sm text-gray-600">Manager:</span>
-                <span className="font-medium">{call.managerNumber}</span>
+              <div className="flex justify-between items-center bg-yellow-100 -mx-3 -mb-3 mt-2 px-3 py-2 rounded-b-lg">
+                <span className="text-sm font-medium text-yellow-800">RM (Region Manager):</span>
+                <span className="font-bold text-yellow-900 text-lg">{call.managerNumber}</span>
               </div>
             )}
           </div>

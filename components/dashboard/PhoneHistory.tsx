@@ -146,10 +146,10 @@ export function PhoneHistory({ phoneNumber, currentCallId, onSelectCall }: Phone
             <div className="text-xs text-blue-100">Izohlar</div>
           </div>
           <div className="text-center">
-            <div className="text-2xl font-bold">
+            <div className="text-2xl font-bold text-yellow-300">
               {contactInfo?.driverInfo?.managerNumber || '-'}
             </div>
-            <div className="text-xs text-blue-100">Manager</div>
+            <div className="text-xs text-blue-100">RM</div>
           </div>
         </div>
       </div>
