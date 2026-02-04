@@ -124,7 +124,11 @@ export function IncomingCallsList({
                   Yopish
                 </button>
                 <button
-                  onClick={() => onAccept(call)}
+                  onClick={() => {
+                    // Stop sound when accepting a call
+                    audioRef.current?.pause();
+                    onAccept(call);
+                  }}
                   className="flex-1 px-3 py-1.5 text-sm bg-green-600 hover:bg-green-700 text-white rounded flex items-center justify-center gap-1"
                 >
                   <Phone className="w-4 h-4" />
