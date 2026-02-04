@@ -10,15 +10,17 @@ interface UseRealtimeOptions {
   onMissedCall?: (data: unknown) => void;
 }
 
+// Polling interval in milliseconds (5 seconds)
+const POLL_INTERVAL = 5000;
+
 export function useRealtime(options: UseRealtimeOptions = {}) {
   const [isConnected, setIsConnected] = useState(false);
   const [lastEvent, setLastEvent] = useState<RealtimeEvent | null>(null);
-  const eventSourceRef = useRef<EventSource | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const reconnectAttemptsRef = useRef(0);
-  const maxReconnectAttempts = 10;
+  const lastEventIdRef = useRef<string>('0');
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const isMountedRef = useRef(true);
 
-  // Use refs to store callbacks to avoid recreating EventSource on every render
+  // Use refs to store callbacks to avoid re-polling on every render
   const onIncomingCallRef = useRef(options.onIncomingCall);
   const onCallEndedRef = useRef(options.onCallEnded);
   const onCallUpdatedRef = useRef(options.onCallUpdated);
@@ -32,99 +34,100 @@ export function useRealtime(options: UseRealtimeOptions = {}) {
     onMissedCallRef.current = options.onMissedCall;
   }, [options.onIncomingCall, options.onCallEnded, options.onCallUpdated, options.onMissedCall]);
 
-  useEffect(() => {
-    // Don't create multiple connections
-    if (eventSourceRef.current) {
-      return;
-    }
+  // Process events from polling response
+  const processEvents = useCallback((events: Array<{ id: string; type: string; data: unknown }>) => {
+    for (const event of events) {
+      const realtimeEvent: RealtimeEvent = {
+        id: event.id,
+        type: event.type as RealtimeEvent['type'],
+        data: event.data as RealtimeEvent['data'],
+        timestamp: Date.now(),
+      };
 
-    const connect = () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
+      // Log non-ping events
+      if (event.type && event.type !== 'connected') {
+        console.log('[Polling] Received event:', event.type, event.id || '');
       }
 
-      console.log('[SSE Client] Connecting...');
-      const eventSource = new EventSource('/api/events');
-      eventSourceRef.current = eventSource;
+      setLastEvent(realtimeEvent);
 
-      eventSource.onopen = () => {
-        console.log('[SSE Client] Connection opened');
-        setIsConnected(true);
-        reconnectAttemptsRef.current = 0;
-      };
-
-      eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data) as RealtimeEvent;
-
-          // Log non-ping events
-          if (data.type && data.type !== 'connected') {
-            console.log('[SSE Client] Received event:', data.type, data.id || '');
+      switch (event.type) {
+        case 'incoming_call':
+          console.log('[Polling] Incoming call received:', event.data);
+          if (event.data && onIncomingCallRef.current) {
+            onIncomingCallRef.current(event.data as CallLog);
           }
-
-          setLastEvent(data);
-
-          switch (data.type) {
-            case 'incoming_call':
-              console.log('[SSE Client] Incoming call received:', data.data);
-              if (data.data && onIncomingCallRef.current) {
-                onIncomingCallRef.current(data.data as CallLog);
-              }
-              break;
-            case 'call_ended':
-              if (data.data && onCallEndedRef.current) {
-                const callData = data.data as { callId: string };
-                onCallEndedRef.current(callData.callId);
-              }
-              break;
-            case 'call_updated':
-              if (data.data && onCallUpdatedRef.current) {
-                onCallUpdatedRef.current(data.data as CallLog);
-              }
-              break;
-            case 'missed_call':
-              console.log('[SSE Client] Missed call received:', data.data);
-              if (data.data && onMissedCallRef.current) {
-                onMissedCallRef.current(data.data);
-              }
-              break;
+          break;
+        case 'call_ended':
+          if (event.data && onCallEndedRef.current) {
+            const callData = event.data as { callId: string };
+            onCallEndedRef.current(callData.callId);
           }
-        } catch (error) {
-          console.error('[SSE Client] Failed to parse SSE event:', error);
-        }
-      };
+          break;
+        case 'call_updated':
+          if (event.data && onCallUpdatedRef.current) {
+            onCallUpdatedRef.current(event.data as CallLog);
+          }
+          break;
+        case 'missed_call':
+          console.log('[Polling] Missed call received:', event.data);
+          if (event.data && onMissedCallRef.current) {
+            onMissedCallRef.current(event.data);
+          }
+          break;
+      }
+    }
+  }, []);
 
-      eventSource.onerror = () => {
-        console.log('[SSE Client] Connection error, will reconnect...');
+  // Poll for new events
+  const poll = useCallback(async () => {
+    if (!isMountedRef.current) return;
+
+    try {
+      const response = await fetch(`/api/events/poll?lastEventId=${lastEventIdRef.current}`);
+
+      if (!response.ok) {
+        console.error('[Polling] Request failed:', response.status);
         setIsConnected(false);
-        eventSource.close();
-        eventSourceRef.current = null;
+        return;
+      }
 
-        // Reconnect with exponential backoff
-        if (reconnectAttemptsRef.current < maxReconnectAttempts) {
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptsRef.current), 30000);
-          console.log(`[SSE Client] Reconnecting in ${delay}ms...`);
-          reconnectTimeoutRef.current = setTimeout(() => {
-            reconnectAttemptsRef.current++;
-            connect();
-          }, delay);
-        }
-      };
-    };
+      const data = await response.json();
+      setIsConnected(true);
 
-    connect();
+      if (data.events && data.events.length > 0) {
+        processEvents(data.events);
+      }
+
+      // Update lastEventId for next poll
+      if (data.lastEventId) {
+        lastEventIdRef.current = data.lastEventId;
+      }
+    } catch (error) {
+      console.error('[Polling] Error:', error);
+      setIsConnected(false);
+    }
+  }, [processEvents]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    console.log('[Polling] Starting polling...');
+
+    // Initial poll
+    poll();
+
+    // Set up polling interval
+    pollingRef.current = setInterval(poll, POLL_INTERVAL);
 
     return () => {
-      console.log('[SSE Client] Cleaning up connection');
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-        eventSourceRef.current = null;
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
+      console.log('[Polling] Stopping polling');
+      isMountedRef.current = false;
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+        pollingRef.current = null;
       }
     };
-  }, []); // Empty dependency array - only run once on mount
+  }, [poll]);
 
   return { isConnected, lastEvent };
 }

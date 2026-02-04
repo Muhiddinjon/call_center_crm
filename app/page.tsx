@@ -6,7 +6,7 @@ import { Headphones, LogOut, Wifi, WifiOff, Settings } from 'lucide-react';
 import { CallForm } from '@/components/dashboard/CallForm';
 import { ManualCallForm } from '@/components/dashboard/ManualCallForm';
 import { PhoneHistory } from '@/components/dashboard/PhoneHistory';
-import { IncomingCallModal } from '@/components/dashboard/IncomingCallModal';
+import { IncomingCallsList } from '@/components/dashboard/IncomingCallsList';
 import { MissedCalls } from '@/components/dashboard/MissedCalls';
 import { MyMissedCalls } from '@/components/dashboard/MyMissedCalls';
 import { useRealtime } from '@/hooks/useRealtime';
@@ -23,7 +23,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [selectedCall, setSelectedCall] = useState<CallLog | null>(null);
-  const [incomingCall, setIncomingCall] = useState<CallLog | null>(null);
+  const [incomingCalls, setIncomingCalls] = useState<CallLog[]>([]);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   // Fetch current user
@@ -47,18 +47,37 @@ export default function DashboardPage() {
   // Real-time events
   const handleIncomingCall = useCallback((call: CallLog) => {
     if (call.callType === 'incoming') {
-      setIncomingCall(call);
+      // Add to queue if not already there
+      setIncomingCalls((prev) => {
+        if (prev.some((c) => c.id === call.id || c.callId === call.callId)) {
+          return prev; // Already in queue
+        }
+        return [...prev, call];
+      });
     }
     setRefreshTrigger((t) => t + 1);
   }, []);
 
-  const handleCallEnded = useCallback(() => {
+  const handleCallEnded = useCallback((callId: string) => {
+    // Remove from incoming calls queue
+    setIncomingCalls((prev) => prev.filter((c) => c.callId !== callId && c.id !== callId));
     setRefreshTrigger((t) => t + 1);
   }, []);
 
   const handleMissedCall = useCallback(() => {
     // Refresh missed calls lists when a new missed call is assigned
     setRefreshTrigger((t) => t + 1);
+  }, []);
+
+  // Handle accepting a call from the queue
+  const handleAcceptCall = useCallback((call: CallLog) => {
+    setSelectedCall(call);
+    setIncomingCalls((prev) => prev.filter((c) => c.id !== call.id));
+  }, []);
+
+  // Handle dismissing a call from the queue
+  const handleDismissCall = useCallback((callId: string) => {
+    setIncomingCalls((prev) => prev.filter((c) => c.id !== callId));
   }, []);
 
   const { isConnected } = useRealtime({
@@ -189,14 +208,11 @@ export default function DashboardPage() {
         </div>
       </main>
 
-      {/* Incoming call modal */}
-      <IncomingCallModal
-        call={incomingCall}
-        onClose={() => setIncomingCall(null)}
-        onAccept={(call) => {
-          setSelectedCall(call);
-          setIncomingCall(null);
-        }}
+      {/* Incoming calls list (queue) */}
+      <IncomingCallsList
+        calls={incomingCalls}
+        onAccept={handleAcceptCall}
+        onDismiss={handleDismissCall}
       />
     </div>
   );
