@@ -18,10 +18,15 @@ export async function POST(request: NextRequest) {
     const data = JSON.parse(body);
     const callData = parseWebhookEvent(data);
 
-    console.log(`Binotel webhook: ${callData.event}, Call ID: ${callData.callId}, Phone: ${callData.phoneNumber}`);
+    console.log(`Binotel webhook: event=${callData.event}, callType=${callData.callType}, callId=${callData.callId}, phone=${callData.phoneNumber}`);
+
+    // Determine if this is a call start or end event
+    const isCallStart = ['call.start', 'incoming.call', 'call_start', 'outgoing.call', '1', '2'].includes(callData.event) ||
+                        (callData.phoneNumber && !['call.end', 'call_end', 'hangup', 'answer'].includes(callData.event) && !callData.duration);
+    const isCallEnd = ['call.end', 'call_end', 'hangup', 'answer'].includes(callData.event) || callData.duration !== undefined;
 
     // Handle different events
-    if (['call.start', 'incoming.call', 'call_start'].includes(callData.event)) {
+    if (isCallStart && !isCallEnd) {
       // Lookup driver info (optional - don't fail if lookup fails)
       let lookupResult = {};
       try {
@@ -81,7 +86,7 @@ export async function POST(request: NextRequest) {
           console.error(`[Webhook] Redis publish error:`, publishError);
         }
       }
-    } else if (['call.end', 'call_end', 'hangup'].includes(callData.event)) {
+    } else if (isCallEnd) {
       // Update call end time
       const updatedCall = await endCall(callData.callId, callData.duration);
 
