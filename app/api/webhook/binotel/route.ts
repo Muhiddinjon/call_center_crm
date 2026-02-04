@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyWebhookSignature, parseWebhookEvent } from '@/lib/binotel';
-import { createCall, endCall, publishEvent, getCallByCallId, addMissedCall } from '@/lib/redis';
+import { createCall, endCall, publishEvent, addMissedCall } from '@/lib/redis';
 import { lookupByPhone } from '@/lib/driver-lookup';
+import { pusherServer, CHANNELS, EVENTS } from '@/lib/pusher';
 
 export async function POST(request: NextRequest) {
   try {
@@ -55,18 +56,29 @@ export async function POST(request: NextRequest) {
       // Publish real-time event for incoming calls
       if (callData.callType === 'incoming') {
         console.log(`[Webhook] Publishing incoming_call event for: ${callData.phoneNumber}`);
+
+        const eventData = {
+          ...call,
+          driverInfo,
+          clientInfo,
+        };
+
         try {
+          // Publish to Pusher (real-time)
+          await pusherServer.trigger(CHANNELS.CALLS, EVENTS.INCOMING_CALL, eventData);
+          console.log(`[Webhook] Pusher incoming_call sent for: ${callData.phoneNumber}`);
+        } catch (pusherError) {
+          console.error(`[Webhook] Pusher error:`, pusherError);
+        }
+
+        try {
+          // Also publish to Redis stream (backup/logging)
           await publishEvent({
             type: 'incoming_call',
-            data: {
-              ...call,
-              driverInfo,
-              clientInfo,
-            },
+            data: eventData,
           });
-          console.log(`[Webhook] incoming_call event published successfully for: ${callData.phoneNumber}`);
         } catch (publishError) {
-          console.error(`[Webhook] Failed to publish incoming_call event:`, publishError);
+          console.error(`[Webhook] Redis publish error:`, publishError);
         }
       }
     } else if (['call.end', 'call_end', 'hangup'].includes(callData.event)) {
@@ -79,14 +91,28 @@ export async function POST(request: NextRequest) {
         const missedCall = await addMissedCall(updatedCall, true);
         console.log(`Missed call detected and assigned: ${callData.callId}, assigned to: ${missedCall.assignedOperator || 'no one on shift'}`);
 
-        // Publish missed call event
+        // Publish missed call event via Pusher
+        try {
+          await pusherServer.trigger(CHANNELS.CALLS, EVENTS.MISSED_CALL, missedCall);
+        } catch (pusherError) {
+          console.error(`[Webhook] Pusher missed_call error:`, pusherError);
+        }
+
+        // Also to Redis
         await publishEvent({
           type: 'missed_call',
           data: missedCall,
         });
       }
 
-      // Publish call ended event
+      // Publish call ended event via Pusher
+      try {
+        await pusherServer.trigger(CHANNELS.CALLS, EVENTS.CALL_ENDED, { callId: callData.callId });
+      } catch (pusherError) {
+        console.error(`[Webhook] Pusher call_ended error:`, pusherError);
+      }
+
+      // Also to Redis
       await publishEvent({
         type: 'call_ended',
         data: { callId: callData.callId },

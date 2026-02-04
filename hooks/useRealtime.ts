@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useCallback } from 'react';
 import type { RealtimeEvent, CallLog } from '@/lib/types';
+import { getPusherClient, CHANNELS, EVENTS } from '@/lib/pusher';
 
 interface UseRealtimeOptions {
   onIncomingCall?: (call: CallLog) => void;
@@ -10,17 +11,12 @@ interface UseRealtimeOptions {
   onMissedCall?: (data: unknown) => void;
 }
 
-// Polling interval in milliseconds (5 seconds)
-const POLL_INTERVAL = 5000;
-
 export function useRealtime(options: UseRealtimeOptions = {}) {
   const [isConnected, setIsConnected] = useState(false);
   const [lastEvent, setLastEvent] = useState<RealtimeEvent | null>(null);
-  const lastEventIdRef = useRef<string>('0');
-  const pollingRef = useRef<NodeJS.Timeout | null>(null);
-  const isMountedRef = useRef(true);
+  const pusherRef = useRef<ReturnType<typeof getPusherClient> | null>(null);
 
-  // Use refs to store callbacks to avoid re-polling on every render
+  // Use refs to store callbacks to avoid reconnecting on every render
   const onIncomingCallRef = useRef(options.onIncomingCall);
   const onCallEndedRef = useRef(options.onCallEnded);
   const onCallUpdatedRef = useRef(options.onCallUpdated);
@@ -34,105 +30,103 @@ export function useRealtime(options: UseRealtimeOptions = {}) {
     onMissedCallRef.current = options.onMissedCall;
   }, [options.onIncomingCall, options.onCallEnded, options.onCallUpdated, options.onMissedCall]);
 
-  // Process events from polling response
-  const processEvents = useCallback((events: Array<{ id: string; type: string; data: unknown }>) => {
-    for (const event of events) {
-      const realtimeEvent: RealtimeEvent = {
-        id: event.id,
-        type: event.type as RealtimeEvent['type'],
-        data: event.data as RealtimeEvent['data'],
-        timestamp: Date.now(),
-      };
-
-      // Log non-ping events
-      if (event.type && event.type !== 'connected') {
-        console.log('[Polling] Received event:', event.type, event.id || '');
-      }
-
-      setLastEvent(realtimeEvent);
-
-      switch (event.type) {
-        case 'incoming_call':
-          console.log('[Polling] Incoming call received:', event.data);
-          if (event.data && onIncomingCallRef.current) {
-            onIncomingCallRef.current(event.data as CallLog);
-          }
-          break;
-        case 'call_ended':
-          if (event.data && onCallEndedRef.current) {
-            const callData = event.data as { callId: string };
-            onCallEndedRef.current(callData.callId);
-          }
-          break;
-        case 'call_updated':
-          if (event.data && onCallUpdatedRef.current) {
-            onCallUpdatedRef.current(event.data as CallLog);
-          }
-          break;
-        case 'missed_call':
-          console.log('[Polling] Missed call received:', event.data);
-          if (event.data && onMissedCallRef.current) {
-            onMissedCallRef.current(event.data);
-          }
-          break;
-      }
-    }
-  }, []);
-
-  // Poll for new events
-  const poll = useCallback(async () => {
-    if (!isMountedRef.current) return;
-
-    try {
-      const response = await fetch(`/api/events/poll?lastEventId=${lastEventIdRef.current}`);
-
-      if (!response.ok) {
-        console.error('[Polling] Request failed:', response.status);
-        setIsConnected(false);
-        return;
-      }
-
-      const data = await response.json();
-      setIsConnected(true);
-
-      if (data.events && data.events.length > 0) {
-        processEvents(data.events);
-      }
-
-      // Update lastEventId for next poll
-      if (data.lastEventId) {
-        lastEventIdRef.current = data.lastEventId;
-      }
-    } catch (error) {
-      console.error('[Polling] Error:', error);
-      setIsConnected(false);
-    }
-  }, [processEvents]);
-
   useEffect(() => {
-    isMountedRef.current = true;
-    console.log('[Polling] Starting polling...');
+    console.log('[Pusher] Connecting...');
 
-    // Initial poll
-    poll();
+    const pusher = getPusherClient();
+    pusherRef.current = pusher;
 
-    // Set up polling interval
-    pollingRef.current = setInterval(poll, POLL_INTERVAL);
+    // Subscribe to calls channel
+    const channel = pusher.subscribe(CHANNELS.CALLS);
+
+    // Connection state
+    pusher.connection.bind('connected', () => {
+      console.log('[Pusher] Connected');
+      setIsConnected(true);
+    });
+
+    pusher.connection.bind('disconnected', () => {
+      console.log('[Pusher] Disconnected');
+      setIsConnected(false);
+    });
+
+    pusher.connection.bind('error', (err: Error) => {
+      console.error('[Pusher] Connection error:', err);
+      setIsConnected(false);
+    });
+
+    // Incoming call event
+    channel.bind(EVENTS.INCOMING_CALL, (data: CallLog) => {
+      console.log('[Pusher] Incoming call:', data.phoneNumber);
+      setLastEvent({
+        id: `pusher-${Date.now()}`,
+        type: 'incoming_call',
+        data,
+        timestamp: Date.now(),
+      });
+      if (onIncomingCallRef.current) {
+        onIncomingCallRef.current(data);
+      }
+    });
+
+    // Call ended event
+    channel.bind(EVENTS.CALL_ENDED, (data: { callId: string }) => {
+      console.log('[Pusher] Call ended:', data.callId);
+      setLastEvent({
+        id: `pusher-${Date.now()}`,
+        type: 'call_ended',
+        data,
+        timestamp: Date.now(),
+      });
+      if (onCallEndedRef.current) {
+        onCallEndedRef.current(data.callId);
+      }
+    });
+
+    // Call updated event
+    channel.bind(EVENTS.CALL_UPDATED, (data: CallLog) => {
+      console.log('[Pusher] Call updated:', data.id);
+      setLastEvent({
+        id: `pusher-${Date.now()}`,
+        type: 'call_updated',
+        data,
+        timestamp: Date.now(),
+      });
+      if (onCallUpdatedRef.current) {
+        onCallUpdatedRef.current(data);
+      }
+    });
+
+    // Missed call event
+    channel.bind(EVENTS.MISSED_CALL, (data: unknown) => {
+      console.log('[Pusher] Missed call:', data);
+      setLastEvent({
+        id: `pusher-${Date.now()}`,
+        type: 'missed_call',
+        data: data as RealtimeEvent['data'],
+        timestamp: Date.now(),
+      });
+      if (onMissedCallRef.current) {
+        onMissedCallRef.current(data);
+      }
+    });
+
+    // Check initial connection state
+    if (pusher.connection.state === 'connected') {
+      setIsConnected(true);
+    }
 
     return () => {
-      console.log('[Polling] Stopping polling');
-      isMountedRef.current = false;
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current);
-        pollingRef.current = null;
-      }
+      console.log('[Pusher] Cleaning up...');
+      channel.unbind_all();
+      pusher.unsubscribe(CHANNELS.CALLS);
     };
-  }, [poll]);
+  }, []);
 
   return { isConnected, lastEvent };
 }
 
-// Fallback polling hook for environments where SSE doesn't work well
+// Fallback polling hook for environments where Pusher doesn't work
 export function usePolling(intervalMs = 5000) {
   const [activeCalls, setActiveCalls] = useState<CallLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
